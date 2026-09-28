@@ -4,6 +4,23 @@ PaperRead는 arXiv 논문의 원본 PDF와 한국어 번역을 나란히 읽고,
 
 논문을 열기만 하면 번역이나 질문 요청을 보내지 않습니다. 번역 시작과 질문 전송은 사용자가 직접 누를 때만 실행됩니다. 사용자가 번역이나 질문을 요청하면 해당 논문 내용이 Codex CLI를 거쳐 OpenAI에 전송됩니다. API 키는 필요하지 않습니다.
 
+![원본 PDF와 저장된 한국어 번역을 나란히 읽는 PaperRead 화면](docs/screenshots/reader.png)
+
+실제 로컬 실행 화면입니다. 예시 논문은 Vaswani 외, [Attention Is All You Need](https://arxiv.org/abs/1706.03762)이며, 한국어는 저장된 번역입니다.
+
+<details>
+<summary>첫 화면·보관함과 질문 패널 보기</summary>
+
+첫 화면에서 논문을 열고, 보관함에서 저장한 논문을 다시 읽습니다.
+
+![논문 열기 안내와 저장한 논문 보관함](docs/screenshots/home.png)
+
+읽기 화면 옆에서 질문을 작성합니다. 아래는 질문 전송 전 화면입니다.
+
+![원문과 한국어 지면 옆에서 질문을 작성하는 패널](docs/screenshots/questions.png)
+
+</details>
+
 ## 필요한 환경
 
 - Windows(검증 환경). macOS 실행 방법도 아래에 안내하지만, 실제 Mac에서 로그인·번역·PDF 표시는 아직 검증하지 않았습니다.
