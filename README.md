@@ -8,8 +8,7 @@ PaperRead는 arXiv 논문의 원본 PDF와 한국어 번역을 나란히 읽고,
 
 실제 로컬 실행 화면입니다. 예시 논문은 Vaswani 외, [Attention Is All You Need](https://arxiv.org/abs/1706.03762)이며, 한국어는 저장된 번역입니다.
 
-<details>
-<summary>첫 화면·보관함과 질문 패널 보기</summary>
+
 
 첫 화면에서 논문을 열고, 보관함에서 저장한 논문을 다시 읽습니다.
 
@@ -19,7 +18,6 @@ PaperRead는 arXiv 논문의 원본 PDF와 한국어 번역을 나란히 읽고,
 
 ![원문과 한국어 지면 옆에서 질문을 작성하는 패널](docs/screenshots/questions.png)
 
-</details>
 
 ## 필요한 환경
 
