@@ -1,0 +1,15 @@
+.dryforge/
+node_modules
+dist/
+coverage/
+*.tsbuildinfo
+.env
+artifacts/
+**/.codex-home/
+**/.pdf-cache/
+*.result.json
+tests/
+scripts/
+**/AGENTS.md
+**/CLAUDE.md
+docs/tracking/

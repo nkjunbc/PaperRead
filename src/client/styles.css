@@ -1,0 +1,2264 @@
+:root {
+  --bg: #f6f6f4;
+  --panel: #ffffff;
+  --ink: #1c1c1a;
+  --muted: #6b6b66;
+  --line: #d9d9d3;
+  --accent: #2f6f4e;
+  --warn: #8a5a00;
+  --error: #9b2c2c;
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; margin: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: 'Pretendard', 'Malgun Gothic', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+/* A visible focus ring everywhere: the whole reader is keyboard operable. */
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+button, select, input {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* ------------------------------------------------------------------ header */
+
+:root {
+  --accent-soft: #e7f0eb;
+  --accent-ink: #225c3d;
+  /* The height of a pane head (a row of 13px tools) and of the question panel's header. */
+  --reader-head-height: 42px;
+  --radius: 10px;
+  --shadow: 0 6px 20px rgba(28, 28, 26, 0.08);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.topbar {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 14px;
+  min-height: 56px;
+  padding: 8px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.brand__mark {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.open-form {
+  display: flex;
+  flex: 1 1 320px;
+  gap: 8px;
+  min-width: 0;
+  max-width: 640px;
+}
+
+.open-form input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.open-form input:focus {
+  background: var(--panel);
+}
+
+.topbar__right {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.account-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+}
+
+.status-dot {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #b0b0aa;
+  box-shadow: 0 0 0 3px rgba(28, 28, 26, 0.05);
+}
+
+.status-dot--ok { background: #2f9e5f; }
+.status-dot--off { background: #b0b0aa; }
+.status-dot--warn { background: #d9931b; }
+.status-dot--pending { background: #b0b0aa; animation: status-pulse 1.2s ease-in-out infinite; }
+
+@keyframes status-pulse {
+  50% { opacity: 0.35; }
+}
+
+.popover-layer {
+  position: fixed;
+  z-index: 15;
+  inset: 0;
+}
+
+.popover-scrim {
+  position: absolute;
+  inset: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: rgba(28, 28, 26, 0.12);
+  cursor: default;
+}
+
+.popover-anchor {
+  position: absolute;
+  top: 60px;
+  right: 16px;
+  max-width: calc(100vw - 32px);
+}
+
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.notice.error { background: #fdeeee; color: var(--error); }
+.notice.info { background: #eef4f0; color: var(--accent); }
+.notice.warn { background: #fdf4e3; color: var(--warn); }
+.notice__text { flex: 1 1 auto; }
+.notice button { flex: 0 0 auto; color: inherit; }
+
+/* ------------------------------------------------------------------- home */
+
+.home {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 28px 24px 40px;
+}
+
+.home__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(320px, 520px);
+  gap: 28px;
+  max-width: 1180px;
+  margin: 0 auto;
+}
+
+.home__hero h1 {
+  margin: 6px 0 12px;
+  font-size: 26px;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+
+.home__lead {
+  margin: 0 0 18px;
+  color: var(--muted);
+}
+
+.steps {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+}
+
+.steps li {
+  position: relative;
+  padding: 12px 14px 12px 48px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.steps li::before {
+  counter-increment: step;
+  content: counter(step);
+  position: absolute;
+  top: 12px;
+  left: 14px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.steps strong {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--ink);
+}
+
+.home__connection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  margin-top: 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.home__connection p {
+  flex: 1 1 260px;
+  margin: 0;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+/* Korean prose in the shell breaks between words, never inside a word. */
+.home__hero h1,
+.home__lead,
+.steps li,
+.home__connection p,
+.account-panel,
+.replacement-dialog,
+.delete-dialog,
+.reader-toolbar__meta,
+.reader-status,
+.notice {
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+/* ----------------------------------------------------------- reader shell */
+
+.reader-shell {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.reader[hidden] { display: none; }
+
+.toolbar-hint {
+  flex: 1 1 320px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: right;
+}
+
+.toolbar-details {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.toolbar-details div { display: flex; gap: 6px; }
+.toolbar-details dt::after { content: ':'; }
+.toolbar-details dd { margin: 0; color: var(--ink); }
+
+.toolbar-menu { position: relative; }
+
+.toolbar-menu__list {
+  position: absolute;
+  top: 36px;
+  right: 0;
+  z-index: 6;
+  min-width: 170px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.toolbar-menu__list button {
+  width: 100%;
+  border: 0;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.toolbar-menu__danger { color: var(--error); }
+
+.pane-title { font-weight: 700; color: var(--ink); }
+
+.pane-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pane-tools button { padding: 3px 9px; }
+
+.pane-readout {
+  min-width: 3.5em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.pane-readout--wide { min-width: 0; }
+
+.pane-hint {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.pane-head .pane-switch { margin-left: 8px; }
+
+.reader-status {
+  margin: auto;
+  max-width: 480px;
+  padding: 28px;
+  text-align: center;
+}
+
+.reader-status h2 {
+  margin: 6px 0 10px;
+  font-size: 20px;
+}
+
+.reader-status p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.reader.resetting .pane[aria-label="한국어 번역"] .pane-body { opacity: 0.45; }
+
+/* ------------------------------------------------------------------- panes */
+
+.reader {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.pane {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--panel);
+}
+
+/* The pane heads and the question panel's header share one height, so the three rules under
+   them run as one line across the reader. A head is a size container: its hint gives way
+   before the head would wrap onto a second row. When its tools still wrap (a narrow pane), the
+   head grows to hold them: the explicit min-height replaces a flex item's automatic minimum, so
+   without flex-shrink 0 the page list below would squeeze it back to one row and the second row
+   of tools would spill over the first page. */
+.pane-head {
+  container: pane-head / inline-size;
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--reader-head-height);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* Browser scroll anchoring is off, so a pane moves only when the reader scrolls it or the app
+   does (and marks the move as its own). Source pages never change size; a Korean page drawn
+   above the view corrects the position itself (KoreanPane), and a browser correction on top
+   would be a second, unannounced one that the scroll link would take for the reader's. */
+.pane-body {
+  flex: 1 1 auto;
+  overflow: auto;
+  overflow-anchor: none;
+  padding: 12px;
+}
+
+.splitter {
+  flex: 0 0 8px;
+  background: var(--line);
+  cursor: col-resize;
+  border: none;
+  padding: 0;
+  border-radius: 0;
+}
+.splitter:hover { background: var(--accent); }
+
+/* --------------------------------------------------------------- pdf pages */
+
+.pdf-page {
+  position: relative;
+  margin: 0 auto 16px;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+}
+
+.pdf-page canvas { display: block; }
+
+.pdf-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 13px;
+  background: repeating-linear-gradient(45deg, #fafafa, #fafafa 10px, #f2f2f0 10px, #f2f2f0 20px);
+}
+
+/* Ratio coordinates stay in page units until the browser draws the click target. */
+.source-block-target {
+  position: absolute;
+  display: block;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.source-block-target:hover:not(:disabled) { border: 0; }
+
+/* -------------------------------------------------------------- text layer */
+
+/* Minimal transparent selectable text, positioned by pdf.js's own TextLayer.
+   pdf_viewer.css is not imported wholesale; only what selection needs lives here. */
+.textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  line-height: 1;
+  text-align: initial;
+  transform-origin: 0 0;
+}
+/* pdf.js writes --font-height on each run and measures it to derive --scale-x / --rotate;
+   the stylesheet has to turn those into the run's real size. Left to inherit the page's
+   15px, every run is drawn too tall and too wide, overflows into the neighbouring column,
+   and the highlight boxes saved from it are larger than the printed lines. */
+.textLayer span,
+.textLayer br {
+  position: absolute;
+  white-space: pre;
+  color: transparent;
+  font-size: calc(var(--total-scale-factor, 1) * var(--min-font-size, 1) * var(--font-height, 0px));
+  transform-origin: 0 0;
+  transform: rotate(var(--rotate, 0deg)) scaleX(var(--scale-x, 1)) scale(calc(1 / var(--min-font-size, 1)));
+  cursor: text;
+}
+.textLayer ::selection {
+  background: rgba(47, 111, 78, 0.35);
+}
+
+/* ---------------------------------------------------------- highlight layer */
+
+.highlight-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.highlight-box {
+  position: absolute;
+  display: block;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 2px;
+  cursor: pointer;
+  pointer-events: auto;
+  mix-blend-mode: multiply;
+}
+
+.highlight-note-dot {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ink);
+}
+
+.highlight-popover {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 5;
+  width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+  font-size: 13px;
+}
+
+.highlight-excerpt {
+  margin: 0;
+  color: var(--muted);
+  max-height: 4.8em;
+  overflow: hidden;
+}
+
+.highlight-popover textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px;
+  font: inherit;
+}
+
+.highlight-colors {
+  display: flex;
+  gap: 6px;
+}
+
+.highlight-color-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  padding: 0;
+}
+.highlight-color-swatch.selected { border-color: var(--ink); }
+
+.highlight-popover-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+/* ------------------------------------------------------------ translations */
+
+.empty { color: var(--muted); padding: 24px 12px; text-align: center; }
+
+/* ----------------------------------------------------------- korean pages */
+
+.kr-page {
+  position: relative;
+  margin: 0 auto 16px;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+
+.kr-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 13px;
+  background: repeating-linear-gradient(45deg, #fafafa, #fafafa 10px, #f2f2f0 10px, #f2f2f0 20px);
+  margin: 0 auto 16px;
+}
+
+.kr-row-columns {
+  display: flex;
+  gap: 24px;
+}
+
+.kr-row-columns .kr-column {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.kr-row-full { width: 100%; }
+
+.kr-text {
+  margin: 0 0 0.8em;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.kr-source {
+  background-repeat: no-repeat;
+  margin: 0 0 0.8em;
+}
+
+/* ----------------------------------------------------------- narrow screen */
+
+.pane-switch { display: none; }
+
+/* PC side-by-side is the main mode; a narrow screen — or a reader narrowed by the docked
+   question panel (App, one-pane) — shows one pane at a time. The other pane stays laid out
+   underneath, invisible, so the scroll link keeps it in line and switching shows the same
+   place; it takes no clicks, no focus and is not read out. */
+@media (max-width: 860px) {
+  .pane-switch { display: inline-flex; gap: 6px; }
+  .splitter { display: none; }
+  .reader.narrow .pane { flex: 1 1 100% !important; width: 100% !important; }
+  .reader.narrow .pane.hidden { position: absolute; inset: 0; visibility: hidden; }
+}
+
+.reader.one-pane .pane-switch { display: inline-flex; gap: 6px; }
+.reader.one-pane .splitter { display: none; }
+.reader.one-pane .pane { flex: 1 1 100% !important; width: 100% !important; }
+.reader.one-pane .pane.hidden { position: absolute; inset: 0; visibility: hidden; }
+
+/* ------------------------------------------------------------ session views */
+
+.eyebrow {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.3;
+  text-transform: uppercase;
+}
+
+.account-panel,
+.library-panel,
+.reader-toolbar {
+  min-width: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 5px 18px rgba(28, 28, 26, 0.06);
+}
+
+.account-panel {
+  width: min(100%, 420px);
+  padding: 20px;
+}
+
+.account-panel[hidden] {
+  display: none;
+}
+
+.account-panel__header,
+.library-panel__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.account-panel h2,
+.library-panel h2,
+.reader-toolbar h2 {
+  max-width: 100%;
+  margin: 2px 0 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection-badge,
+.library-count,
+.model-chip {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  min-height: 24px;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.connection-badge--connected {
+  border-color: #9fc6ae;
+  color: #225c3d;
+}
+
+.connection-badge--attention {
+  border-color: #d8ba7d;
+  color: var(--warn);
+}
+
+.account-panel__connection,
+.account-panel__note,
+.account-panel__error,
+.account-panel__attempt,
+.replacement-dialog__copy p,
+.delete-dialog p {
+  margin: 12px 0 0;
+}
+
+.account-panel__connection,
+.account-panel__note {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.account-panel__usage {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.account-panel__attempt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.account-panel__attempt > span {
+  flex: 1 1 100%;
+  color: var(--muted);
+}
+
+.account-panel__attempt--success {
+  border-color: #9fc6ae;
+  background: #f1f8f3;
+}
+
+.account-panel__attempt--warning {
+  border-color: #d8ba7d;
+  background: #fff9ec;
+}
+
+.account-panel__attempt--error,
+.account-panel__error {
+  border-color: #e2a5a5;
+  background: #fff4f4;
+  color: var(--error);
+}
+
+.account-panel__attempt--info {
+  background: #f3f6f4;
+}
+
+.account-panel__attempt a {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.account-panel__error {
+  padding: 9px 11px;
+  border: 1px solid;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.account-panel__actions,
+.replacement-dialog__actions,
+.delete-dialog__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+/* The toolbar is a two-column grid on a wide reader and turns into one
+   wrapping column before controls can squeeze into one another. */
+.reader-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 16px;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.reader-toolbar__main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 24px;
+}
+
+.reader-toolbar__summary {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.reader-toolbar__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 16px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.reader-toolbar__summary h2 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.translation-progress {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.translation-progress > span + span {
+  padding-left: 12px;
+  border-left: 1px solid var(--line);
+}
+
+.model-chip {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reader-toolbar__controls {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+}
+
+.model-picker {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.model-picker select {
+  width: 100%;
+  min-width: 0;
+  max-width: 260px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+.reader-toolbar__actions {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.reader-toolbar__actions button {
+  white-space: nowrap;
+}
+
+.toolbar-disabled-reason {
+  flex: 1 1 320px;
+  margin: 0;
+  color: var(--warn);
+  font-size: 12px;
+  text-align: right;
+}
+
+.library-panel {
+  width: 100%;
+  align-self: start;
+  padding: 16px;
+}
+
+.library-list {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.library-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fcfcfa;
+}
+
+.library-card.is-selected {
+  border-color: var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.library-card__open {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  border: 0;
+  background: transparent;
+  border-radius: 8px 0 0 8px;
+  text-align: left;
+}
+
+.library-card__title,
+.library-card__meta,
+.library-card__date {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-card__title {
+  font-weight: 700;
+}
+
+.library-card__meta,
+.library-card__date {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.library-card__menu-button {
+  align-self: start;
+  min-width: 38px;
+  border: 0;
+  border-left: 1px solid var(--line);
+  border-radius: 0 8px 8px 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 19px;
+  line-height: 1;
+}
+
+.library-card__menu-button:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+.library-card__menu {
+  position: absolute;
+  top: 40px;
+  right: 8px;
+  z-index: 3;
+  min-width: 120px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  box-shadow: 0 4px 14px rgba(28, 28, 26, 0.12);
+}
+
+.library-card__menu button {
+  width: 100%;
+  border: 0;
+  text-align: left;
+}
+
+.library-empty {
+  margin: 18px 0 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.dialog-scrim {
+  position: fixed;
+  z-index: 20;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  padding: 24px;
+  background: rgba(28, 28, 26, 0.32);
+}
+
+.replacement-dialog,
+.delete-dialog {
+  width: min(100%, 520px);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: 0 14px 50px rgba(28, 28, 26, 0.2);
+}
+
+.replacement-dialog__copy {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.replacement-dialog__copy strong {
+  color: var(--error);
+}
+
+.delete-dialog__warning {
+  color: var(--error);
+  font-size: 13px;
+}
+
+.danger {
+  border-color: var(--error);
+  background: var(--error);
+  color: #fff;
+}
+
+@media (max-width: 960px) {
+  .reader-toolbar__controls {
+    justify-content: flex-start;
+  }
+
+  .toolbar-disabled-reason,
+  .toolbar-hint {
+    text-align: left;
+  }
+}
+
+@media (max-width: 960px) {
+  .home__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* A hint gives way before its head would wrap: the original's head holds the zoom and page
+   tools as well, the Korean one only a readout. */
+@container pane-head (max-width: 760px) {
+  .pane-head--source .pane-hint { display: none; }
+}
+
+@container pane-head (max-width: 420px) {
+  .pane-hint { display: none; }
+}
+
+@media (max-width: 720px) {
+  .topbar {
+    flex-wrap: wrap;
+  }
+
+  .open-form {
+    order: 3;
+    flex: 1 1 100%;
+    max-width: none;
+  }
+
+  .popover-anchor {
+    right: 8px;
+    left: 8px;
+  }
+
+  .account-panel {
+    width: 100%;
+  }
+}
+
+@media (max-width: 600px) {
+
+  .reader-toolbar {
+    gap: 12px;
+    padding: 12px;
+  }
+
+  .reader-toolbar__controls,
+  .reader-toolbar__actions {
+    width: 100%;
+  }
+
+  .model-picker,
+  .model-picker select {
+    max-width: none;
+  }
+
+  .reader-toolbar__actions button {
+    flex: 1 1 0;
+  }
+
+  .account-panel,
+  .library-panel {
+    width: 100%;
+  }
+
+  .dialog-scrim {
+    align-items: end;
+    padding: 12px;
+  }
+
+  .replacement-dialog,
+  .delete-dialog {
+    max-height: calc(100vh - 24px);
+    padding: 18px;
+  }
+}
+
+/* ---------------------------------------------------------- question panel */
+
+:root {
+  --chat-width: clamp(360px, 30vw, 460px);
+  --chat-duration: 220ms;
+  --chat-ease: cubic-bezier(0.2, 0, 0, 1);
+  /* The panel's inset from its edges: header, conversation and composer all line up on it. */
+  --chat-inset: 16px;
+  --surface-sunken: #f2f2ef;
+  --ink-soft: #3a3a36;
+  --mono: ui-monospace, 'Cascadia Code', 'Cascadia Mono', Consolas, 'D2Coding', monospace;
+  --scrollbar-thin: #c9c9c3;
+}
+
+/* The reading panes and the docked panel share one row under the toolbar. */
+.reader-stage {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.reader-stage > .reader {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.icon { flex: 0 0 auto; }
+
+/* Toolbar toggle: its own group after the translation actions, set off by a rule. */
+.reader-toolbar__panel {
+  display: flex;
+  align-items: center;
+  margin-left: 2px;
+  padding-left: 12px;
+  border-left: 1px solid var(--line);
+}
+
+.chat-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px 4px 10px;
+  white-space: nowrap;
+}
+
+.chat-toggle[aria-expanded="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+/* The dock grows from nothing and the reading panes give way. Its content keeps the final
+   width throughout, so text never reflows while the panel slides in. */
+.chat-dock {
+  position: relative;
+  flex: 0 0 auto;
+  width: 0;
+  overflow: hidden;
+  border-left: 1px solid transparent;
+  background: var(--panel);
+  visibility: hidden;
+  transition:
+    width var(--chat-duration) var(--chat-ease),
+    border-color 0s linear var(--chat-duration),
+    visibility 0s linear var(--chat-duration);
+}
+
+.chat-dock.is-open {
+  width: var(--chat-width);
+  border-left-color: var(--line);
+  visibility: visible;
+  transition:
+    width var(--chat-duration) var(--chat-ease),
+    border-color 0s,
+    visibility 0s;
+}
+
+/* The dock's left border takes one pixel of its width; the content fills the rest exactly. */
+.chat-dock__inner {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: calc(var(--chat-width) - 1px);
+}
+
+.chat-dock__loading {
+  margin: 0;
+  padding: 24px var(--chat-inset);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.chat-dock__failed {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 24px var(--chat-inset);
+  color: var(--error);
+  font-size: 13px;
+  line-height: 1.55;
+  word-break: keep-all;
+}
+
+.chat-dock__failed p { margin: 0; }
+
+.chat-dock__failed-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chat-dock__failed-actions button { font-size: 12.5px; }
+.chat-dock__failed-actions button:not(.primary) { color: var(--ink); }
+
+.chat-scrim { display: none; }
+
+/* ----------------------------------------------------------- panel frame */
+
+/* A size container: a narrow panel (a small screen's sheet) tightens its header row. */
+.chat {
+  container: chat / inline-size;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--panel);
+}
+
+/* One row, as tall as the pane heads beside it, so the rules under the three heads line up:
+   the panel's title, then its tools — model, new conversation, close. */
+.chat__header {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--reader-head-height);
+  padding: 4px var(--chat-inset);
+  border-bottom: 1px solid var(--line);
+}
+
+.chat__title {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat__tools {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+
+.chat__icon-button {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.chat__icon-button:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--surface-sunken);
+  color: var(--ink);
+}
+
+.chat__icon-button--small {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: inherit;
+}
+
+.chat__model {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 190px;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+}
+
+.chat__new {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px 3px 8px;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+@container chat (max-width: 380px) {
+  .chat__title { font-size: 16px; }
+  .chat__new { padding: 3px 7px; }
+  /* The button keeps its words for assistive technology; on screen the + says it. */
+  .chat__new-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}
+
+.chat__new[aria-expanded="true"],
+.chat__new[aria-expanded="true"]:hover:not(:disabled) {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+/* The "새 대화" confirmation floats under the header, anchored to its button: nothing in the
+   conversation moves when it opens or closes. */
+.chat__confirm {
+  position: absolute;
+  z-index: 3;
+  top: calc(100% + 6px);
+  right: var(--chat-inset);
+  width: min(300px, calc(100% - 2 * var(--chat-inset)));
+  padding: 12px;
+  border: 1px solid #e8c3c3;
+  border-radius: 10px;
+  background: #fffafa;
+  box-shadow: 0 8px 24px rgba(28, 28, 26, 0.14);
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: keep-all;
+  animation: chat-rise-in 140ms var(--chat-ease);
+}
+
+.chat__confirm p { margin: 0 0 10px; }
+
+.chat__confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.chat__confirm button { font-size: 12.5px; }
+
+.chat__confirm-clear {
+  border-color: var(--error);
+  background: var(--error);
+  color: #fff;
+}
+
+.chat__confirm-clear:hover:not(:disabled) { border-color: var(--error); background: #862525; }
+
+@keyframes chat-rise-in {
+  from { opacity: 0; transform: translateY(-4px); }
+}
+
+/* ---------------------------------------------------------- conversation */
+
+.chat__body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.chat__scroll {
+  height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.chat__scroll:focus-visible { outline-offset: -3px; }
+
+/* The list keeps a gutter for its scrollbar (ChatPanel measures it into --chat-gutter); the
+   right padding gives that width back, so the text ends on the same line as the header's and
+   the composer's controls. */
+.chat__content { padding: 18px calc(var(--chat-inset) - var(--chat-gutter, 0px)) 28px var(--chat-inset); }
+
+.chat__loading,
+.chat__load-error p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.chat__load-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  word-break: keep-all;
+}
+
+.chat__messages {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.msg { min-width: 0; }
+
+/* The reader's own question: a quiet bubble on the right. */
+.msg--question {
+  align-self: flex-end;
+  max-width: 88%;
+  padding: 9px 13px;
+  border-radius: 14px 14px 4px 14px;
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.6;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.msg--question.is-pending { opacity: 0.7; }
+
+.msg__text {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.msg__text + .msg__text { margin-top: 6px; }
+
+.msg__quote {
+  margin: 0;
+  padding: 1px 0 1px 10px;
+  border-left: 2px solid rgba(47, 111, 78, 0.45);
+  color: var(--accent-ink);
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+  line-clamp: 6;
+  overflow: hidden;
+}
+
+.msg__quote.is-expanded {
+  display: block;
+  -webkit-line-clamp: none;
+  line-clamp: none;
+  overflow: visible;
+}
+
+.msg__quote-wrap + .msg__text,
+.msg__text + .msg__quote-wrap,
+.msg__quote-wrap + .msg__quote-wrap { margin-top: 6px; }
+
+.msg__quote-toggle {
+  margin: 4px 0 0 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-ink);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.msg__quote-toggle:hover:not(:disabled) { color: var(--ink); }
+
+/* The answer: full-width reading prose. */
+.msg--answer { width: 100%; }
+
+.msg__meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.msg__model {
+  overflow: hidden;
+  margin-right: 4px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg__notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  margin-top: 10px;
+  padding: 9px 10px 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fafaf8;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+
+.msg__notice p {
+  flex: 1 1 180px;
+  margin: 0;
+}
+
+.msg__notice--error {
+  border-color: #ecc9c9;
+  background: #fff6f6;
+  color: var(--error);
+}
+
+.msg__notice-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.msg__notice-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.copy-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.copy-button:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--surface-sunken);
+  color: var(--ink);
+}
+
+.copy-button.is-done { color: var(--accent); }
+
+/* Waiting for the first words. */
+.typing {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.typing__dots {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.typing__dots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.25;
+  animation: chat-dot 1.2s ease-in-out infinite;
+}
+
+.typing__dots i:nth-child(2) { animation-delay: 0.15s; }
+.typing__dots i:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes chat-dot {
+  0%, 80%, 100% { opacity: 0.25; transform: translateY(0); }
+  40% { opacity: 1; transform: translateY(-2px); }
+}
+
+.chat__jump {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px 5px 10px;
+  border-radius: 999px;
+  background: var(--panel);
+  box-shadow: 0 4px 14px rgba(28, 28, 26, 0.12);
+  color: var(--ink);
+  font-size: 12.5px;
+  transform: translateX(-50%);
+  animation: chat-rise 160ms var(--chat-ease);
+}
+
+@keyframes chat-rise {
+  from { opacity: 0; transform: translate(-50%, 6px); }
+}
+
+/* Empty conversation */
+.chat-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-top: 4px;
+}
+
+.chat-empty__lead {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 14px;
+  line-height: 1.65;
+  word-break: keep-all;
+}
+
+.chat-empty__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chat-empty__chip {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 10px;
+  color: var(--ink);
+  font-size: 13.5px;
+  line-height: 1.45;
+  text-align: left;
+  word-break: keep-all;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+
+.chat-empty__chip:hover:not(:disabled) { background: #f7faf8; }
+
+.chat-empty__tip {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+  word-break: keep-all;
+}
+
+/* -------------------------------------------------------------- composer */
+
+.chat__footer {
+  flex: 0 0 auto;
+  padding: 10px var(--chat-inset) 12px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.chat__notice {
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border: 1px solid #ead7b0;
+  border-radius: 8px;
+  background: #fdf8ec;
+  color: var(--warn);
+  font-size: 12.5px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+
+.chat__error {
+  display: flex;
+  align-items: center;
+  gap: 6px 8px;
+  margin-bottom: 8px;
+  padding: 6px 6px 6px 10px;
+  border: 1px solid #e2a5a5;
+  border-radius: 8px;
+  background: #fff4f4;
+  color: var(--error);
+  font-size: 12.5px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+
+.chat__error p {
+  flex: 1 1 auto;
+  margin: 0;
+}
+
+.chat__error > button:not(.chat__icon-button) {
+  flex: 0 0 auto;
+  color: var(--ink);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.chat__composer {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.chat__composer:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* Over the limit the frame says so too, focused or not. */
+.chat__composer.is-invalid,
+.chat__composer.is-invalid:focus-within {
+  border-color: var(--error);
+  box-shadow: 0 0 0 3px #f6e1e1;
+}
+
+.chat__composer.is-disabled { background: var(--bg); }
+
+.chat__composer textarea {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  /* About eight lines, then the composer scrolls. */
+  max-height: calc(14.5px * 1.55 * 8 + 14px);
+  padding: 10px 12px 4px;
+  overflow-y: auto;
+  border: 0;
+  border-radius: 12px 12px 0 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14.5px;
+  line-height: 1.55;
+  /* Wrapped the way the sent question and the answers are: between words, not syllables. */
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+  resize: none;
+}
+
+/* The composer's frame carries the focus ring for its textarea. */
+.chat__composer textarea:focus-visible { outline: none; }
+.chat__composer textarea::placeholder { color: #9a9a94; }
+.chat__composer textarea:disabled { cursor: not-allowed; }
+
+.chat__composer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-height: 42px;
+  padding: 3px 6px 6px 12px;
+}
+
+.chat__counter {
+  margin-right: auto;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chat__counter.is-over {
+  color: var(--error);
+  font-weight: 600;
+}
+
+.chat__send {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-color: var(--accent);
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  transition: background-color 0.15s, border-color 0.15s;
+}
+
+.chat__send:hover:not(:disabled) { border-color: var(--accent-ink); background: var(--accent-ink); }
+
+.chat__send:disabled {
+  border-color: var(--line);
+  background: var(--line);
+  opacity: 1;
+}
+
+.chat__send.is-stop {
+  border-color: var(--ink);
+  background: var(--ink);
+}
+
+.chat__send.is-stop:hover:not(:disabled) { border-color: #000; background: #000; }
+
+.chat__hint,
+.chat__blocked {
+  margin: 8px 2px 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+
+.chat__hint { color: var(--muted); }
+
+.chat__blocked {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  color: var(--warn);
+  font-size: 12.5px;
+}
+
+.chat__blocked span { flex: 1 1 180px; }
+
+/* Actions keep the ink of the panel's other buttons; the tint stays with the words. */
+.chat__blocked button {
+  flex: 0 0 auto;
+  color: var(--ink);
+  font-size: 12.5px;
+}
+/* ------------------------------------------------------- answer markdown */
+
+.md {
+  color: var(--ink);
+  font-size: 14.5px;
+  line-height: 1.7;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+
+.md p { margin: 0 0 0.8em; }
+
+/* Answer headings step down clearly from one level to the next and all stay under the panel's
+   own 17px title: 16.5 / 15.7 / 14.5px (in the soft ink) against 14.5px prose. */
+.md-h {
+  margin: 1.5em 0 0.45em;
+  color: var(--ink);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1.45;
+}
+
+.md-h1 { font-size: 1.14em; }
+.md-h2 { font-size: 1.08em; }
+.md-h3 { font-size: 1em; color: var(--ink-soft); }
+.md-h4, .md-h5, .md-h6 { font-size: 0.94em; color: var(--muted); }
+
+.md ul,
+.md ol {
+  margin: 0 0 0.8em;
+  padding-left: 1.4em;
+}
+
+.md li { margin: 0.25em 0; padding-left: 0.1em; }
+.md li > p { margin: 0 0 0.4em; }
+.md li > :last-child { margin-bottom: 0; }
+.md li > ul,
+.md li > ol { margin: 0.25em 0 0.35em; }
+.md li::marker { color: var(--muted); }
+.md ol > li::marker { font-variant-numeric: tabular-nums; }
+
+.md blockquote {
+  margin: 0 0 0.8em;
+  padding: 0.05em 0 0.05em 0.9em;
+  border-left: 3px solid var(--line);
+  color: var(--ink-soft);
+}
+
+.md hr {
+  margin: 1.3em 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.md a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.md a:hover { color: var(--accent-ink); }
+
+.md strong { font-weight: 700; }
+
+.md-inline-code {
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  background: var(--surface-sunken);
+  font-family: var(--mono);
+  font-size: 0.86em;
+  word-break: break-word;
+  /* A long span that does wrap keeps its padding and corners on every line. */
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+/* A short span (`dropout = 0.1`) is one token: it moves to the next line whole. */
+.md-inline-code--short { white-space: nowrap; }
+
+.md-code {
+  margin: 0 0 0.9em;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fafaf8;
+}
+
+.md-code__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px 2px 10px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.md-code__lang { font-family: var(--mono); }
+
+.md-code pre {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  tab-size: 4;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+/* The browser gives `code` its own generic `monospace`, which on a Korean Windows is GulimChe:
+   without this the block would ignore --mono and differ from the inline code beside it. */
+.md-code pre code {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+/* Code shows the characters it copies as: no programming ligatures ("->" drawn as an arrow). */
+.md-code pre,
+.md-inline-code { font-variant-ligatures: none; }
+
+.md-code pre:focus-visible { outline-offset: -3px; }
+
+.md-table {
+  max-width: 100%;
+  margin: 0 0 0.9em;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.md-table:focus-visible { outline-offset: 1px; }
+
+.md-table table {
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.md-table th,
+.md-table td {
+  min-width: 5em;
+  padding: 6px 10px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+  /* Cells never squeeze below their words; a table wider than the panel scrolls instead. */
+  overflow-wrap: break-word;
+}
+
+.md-table th {
+  background: #f6f6f3;
+  font-weight: 700;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+/* A formula in a cell is read as one piece; it never breaks after an operator. */
+.md-table .katex { white-space: nowrap; }
+
+.md-table tr > :last-child { border-right: 0; }
+.md-table tbody tr:last-child > td { border-bottom: 0; }
+
+.md-math--display {
+  display: block;
+  margin: 0.5em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.md-math-block {
+  margin: 0 0 0.9em;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+}
+
+.md-math-block .md-math--display { margin: 0; }
+.md .katex { font-size: 1.06em; }
+.md .katex-display { margin: 0.2em 0; }
+.md-math-error { color: var(--error); font-family: var(--mono); font-size: 0.9em; }
+
+/* What scrolls sideways in an answer gets a scrollbar that does not outweigh its content. */
+.md-code pre,
+.md-table,
+.md-math--display,
+.md-math-block {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thin) transparent;
+}
+
+/* A formula still being written, until it closes and is typeset. */
+.md-math-pending {
+  margin-right: 1px;
+  color: var(--muted);
+  font-size: 0.92em;
+}
+
+.md-tail--block { margin: 0 0 0.8em; }
+.md > .md-tail--block:last-child { margin-bottom: 0; }
+
+/* The writing caret at the end of an answer still streaming in. */
+.md-caret {
+  display: inline-block;
+  width: 7px;
+  height: 1.05em;
+  margin-left: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  vertical-align: -0.16em;
+  animation: chat-caret 1s steps(1) infinite;
+}
+
+@keyframes chat-caret {
+  50% { opacity: 0; }
+}
+
+/* ------------------------------------------------ quoting into a question */
+
+.quote-button {
+  position: fixed;
+  z-index: 12;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px 5px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--ink);
+  box-shadow: 0 6px 18px rgba(28, 28, 26, 0.24);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  transform: translate(-50%, -100%);
+  animation: quote-pop 120ms ease-out;
+}
+
+.quote-button.is-below { transform: translate(-50%, 0); }
+.quote-button:hover:not(:disabled) { border: 0; background: #000; }
+
+@keyframes quote-pop {
+  from { opacity: 0; }
+}
+
+.highlight-popover-ask {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px 3px 8px;
+  border-color: #9fc6ae;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.highlight-popover-actions button { white-space: nowrap; }
+
+/* ------------------------------------------- narrow reader: overlay sheet */
+
+@media (max-width: 999px) {
+  .chat-dock {
+    position: absolute;
+    z-index: 9;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(420px, 100%);
+    border-left-color: var(--line);
+    box-shadow: -12px 0 32px rgba(28, 28, 26, 0.14);
+    transform: translateX(100%);
+    transition:
+      transform var(--chat-duration) var(--chat-ease),
+      visibility 0s linear var(--chat-duration);
+  }
+
+  .chat-dock.is-open {
+    width: min(420px, 100%);
+    transform: none;
+    transition:
+      transform var(--chat-duration) var(--chat-ease),
+      visibility 0s;
+  }
+
+  .chat-dock__inner { width: 100%; }
+
+  .chat-scrim {
+    position: absolute;
+    z-index: 8;
+    inset: 0;
+    display: block;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: rgba(28, 28, 26, 0.18);
+    cursor: default;
+    animation: quote-pop var(--chat-duration) ease-out;
+  }
+}
+
+@media (max-width: 600px) {
+  .chat-dock,
+  .chat-dock.is-open { width: 100%; }
+
+  .reader-toolbar__panel {
+    flex: 1 1 auto;
+    margin-left: 0;
+    padding-left: 0;
+    border-left: 0;
+  }
+
+  .chat-toggle { flex: 1 1 auto; justify-content: center; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-dock,
+  .chat-dock.is-open,
+  .chat__composer,
+  .chat__send,
+  .chat-empty__chip { transition: none; }
+
+  .typing__dots i,
+  .md-caret,
+  .chat__jump,
+  .chat__confirm,
+  .quote-button,
+  .chat-scrim { animation: none; }
+
+  .typing__dots i { opacity: 0.6; }
+}
