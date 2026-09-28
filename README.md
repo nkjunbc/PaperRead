@@ -16,9 +16,6 @@ PaperRead는 논문의 원본 PDF와 한국어 번역을 나란히 읽고, 논�
 
 ![원문과 한국어 지면 옆에서 질문을 작성하는 패널](docs/screenshots/questions.png)
 
-PDF 직접 URL로 연 논문입니다. 아래는 번역 시작 전 화면입니다.
-
-![공개 PDF URL로 연 논문의 원문 읽기 화면](docs/screenshots/pdf-url.png)
 
 ## 필요한 환경
 
