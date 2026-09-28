@@ -1112,13 +1112,13 @@ export function App(): JSX.Element {
           }}
         >
           <label htmlFor="arxiv-input" className="sr-only">
-            arXiv 주소 또는 번호
+            논문 PDF/arXiv 주소 또는 arXiv 번호
           </label>
           <input
             id="arxiv-input"
             type="text"
             value={input}
-            placeholder="arXiv 주소 또는 번호 (예: 1706.03762)"
+            placeholder="논문 PDF 주소 또는 arXiv 번호"
             autoComplete="off"
             spellCheck={false}
             onChange={(event) => setInput(event.target.value)}
@@ -1192,12 +1192,12 @@ export function App(): JSX.Element {
           <div className="home__grid">
             <section className="home__hero" aria-labelledby="home-title">
               <p className="eyebrow">원문 옆에서 읽는 한국어 논문</p>
-              <h1 id="home-title">arXiv 논문을 열고, 의심되는 문장은 원문에서 바로 확인하세요.</h1>
+              <h1 id="home-title">논문을 열고, 의심되는 문장은 원문에서 바로 확인하세요.</h1>
               <p className="home__lead">왼쪽에는 원본 PDF, 오른쪽에는 같은 쪽의 한국어 지면이 나란히 놓입니다. 문단을 누르면 반대쪽의 같은 쪽으로 이동합니다.</p>
               <ol className="steps">
                 <li>
                   <strong>논문 열기</strong>
-                  위 입력란에 arXiv 주소나 번호를 넣습니다. 여는 것만으로는 아무것도 외부로 보내지 않습니다.
+                  위 입력란에 공개 PDF 주소, 논문 페이지 주소 또는 arXiv 번호를 넣습니다. 번역을 시작하기 전에는 논문 내용을 Codex로 보내지 않습니다.
                 </li>
                 <li>
                   <strong>Codex 로그인</strong>

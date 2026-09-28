@@ -86,11 +86,22 @@ export function validatePaper(paper: unknown): Paper {
   if (!paper || typeof paper !== 'object') throw invalidInput('paper must be an object');
   const p = paper as Paper;
   assertSafeKey(p.paperKey);
-  if (!isNonEmptyString(p.arxivId)) throw invalidInput('paper.arxivId must be a non-empty string');
-  if (!isInt(p.version) || p.version < 1) throw invalidInput('paper.version must be a positive integer');
+  if (p.sourceKind !== undefined && p.sourceKind !== 'arxiv' && p.sourceKind !== 'publication') throw invalidInput('paper.sourceKind is invalid');
+  if (p.sourceKind === 'publication') {
+    if (p.arxivId !== null || p.version !== null || !/^pdf-[a-f0-9]{64}-[a-f0-9]{64}$/.test(p.paperKey)) throw invalidInput('publication identity is invalid');
+  } else {
+    if (!isNonEmptyString(p.arxivId)) throw invalidInput('paper.arxivId must be a non-empty string');
+    if (!isInt(p.version) || p.version < 1) throw invalidInput('paper.version must be a positive integer');
+  }
   if (p.title !== null && typeof p.title !== 'string') throw invalidInput('paper.title must be a string or null');
   if (!Array.isArray(p.authors) || !p.authors.every((a) => typeof a === 'string')) throw invalidInput('paper.authors must be an array of strings');
   if (!isNonEmptyString(p.sourceUrl)) throw invalidInput('paper.sourceUrl must be a non-empty string');
+  if (p.sourceKind === 'publication') {
+    try {
+      const source = new URL(p.sourceUrl);
+      if (source.protocol !== 'https:' || !source.hostname || source.username || source.password || source.port) throw new Error();
+    } catch { throw invalidInput('publication sourceUrl must be a public HTTPS URL'); }
+  }
   if (!PAPER_STATUSES.includes(p.status)) throw invalidInput(`paper.status is invalid: ${String(p.status)}`);
   if (p.pdfSha256 !== null && !isNonEmptyString(p.pdfSha256)) throw invalidInput('paper.pdfSha256 must be a string or null');
   if (p.pageCount !== null && (!isInt(p.pageCount) || p.pageCount < 0)) throw invalidInput('paper.pageCount must be a non-negative integer or null');
@@ -108,6 +119,7 @@ export function validatePaper(paper: unknown): Paper {
 
   return {
     paperKey: p.paperKey,
+    ...(p.sourceKind === undefined ? {} : { sourceKind: p.sourceKind }),
     arxivId: p.arxivId,
     version: p.version,
     title: p.title ?? null,

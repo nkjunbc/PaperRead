@@ -550,7 +550,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
    * never sends anything to the translation provider.
    */
   async function openPaper(body: Record<string, unknown>): Promise<Paper> {
-    const input = requireString(body, 'input');
+    const input = requireString(body, 'input', 4096);
     // An explicit revision already on disk never asks arXiv anything: in the current format it
     // opens as stored, and in an older one it is re-extracted from its saved PDF below. No
     // metadata request, no download — the library stays usable offline.

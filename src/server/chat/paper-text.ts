@@ -18,7 +18,8 @@ const FRAMING = 'The user is reading the paper below. Its full text was extracte
  */
 export function paperInstructions(paper: Pick<Paper, 'title' | 'arxivId' | 'version'>, blocks: readonly Block[]): string {
   const title = paper.title?.replace(/\s+/g, ' ').trim() ?? '';
-  const head = `${FRAMING}\n\n${title ? `Title: ${title}\n` : ''}arXiv: ${paper.arxivId}v${paper.version}\n\n`;
+  const revision = paper.arxivId !== null && paper.version !== null ? `arXiv: ${paper.arxivId}v${paper.version}\n` : '';
+  const head = `${FRAMING}\n\n${title ? `Title: ${title}\n` : ''}${revision}\n`;
   return `${head}<paper>\n${paperBody(blocks)}\n</paper>`;
 }
 

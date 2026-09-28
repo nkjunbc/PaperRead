@@ -12,6 +12,8 @@ import { TranslationPipeline, type PipelineLogEvent } from './translation/index'
 import { LOOPBACK, createApiServer, type ApiLogEvent, type ApiServer, type PaperAcquirer } from './api/index';
 import { acquirePaper, resolveArxiv } from './arxiv/acquire';
 import { normalizeArxiv } from './arxiv/index';
+import { extractPublication, identifyPublication, loadPublication } from './publication/index';
+import type { PublicNetworkOptions } from './publication/network';
 import { extractPdf, inferTitle } from './pdf/index';
 
 /**
@@ -28,15 +30,18 @@ export function defaultDataDirectory(): string {
 }
 
 /**
- * Real arXiv acquisition wired to the verified T2 modules.
+ * arXiv revisions and public HTTPS PDF URLs use separate immutable identities.
  *
- * `resolve` pins the revision (and only that) inside the open request.
- * `acquire` downloads and extracts afterwards; the caller's raw input is only
- * ever passed to the arXiv normaliser, never into a command string.
+ * `resolve` pins the arXiv revision or the public PDF URL and content hash.
+ * `acquire` extracts afterwards and rejects bytes that changed since resolve.
+ * Input is validated as an identifier or a public URL, never a command string.
  */
-export function realAcquirer(directory: string): PaperAcquirer {
+export function realAcquirer(directory: string, publicationOptions: PublicNetworkOptions = {}): PaperAcquirer {
+  const isPublicationUrl = (input: string) => /^https?:\/\//i.test(input.trim()) && !/^https?:\/\/(?:arxiv\.org|export\.arxiv\.org)(?:[/:]|$)/i.test(input.trim());
   return {
     identify(input: string): string | null {
+      const publicationKey = identifyPublication(input.trim());
+      if (publicationKey !== null) return publicationKey;
       try {
         const id = normalizeArxiv(input);
         return id.version === null ? null : id.paperKey;
@@ -45,9 +50,11 @@ export function realAcquirer(directory: string): PaperAcquirer {
       }
     },
     async resolve(input: string): Promise<Paper> {
+      if (isPublicationUrl(input)) return (await loadPublication(input, publicationOptions)).paper;
       return resolveArxiv(input);
     },
     async acquire(paperKey: string, input: string): Promise<{ paper: Paper; blocks: Block[]; pdf: Buffer }> {
+      if (identifyPublication(paperKey) !== null) return extractPublication(await loadPublication(input, publicationOptions), paperKey);
       // Re-resolving from the pinned key keeps the revision fixed even when the
       // user typed a version-less address.
       const result = await acquirePaper(paperKey, { directory });

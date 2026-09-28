@@ -1,14 +1,12 @@
 # PaperRead
 
-PaperRead는 arXiv 논문의 원본 PDF와 한국어 번역을 나란히 읽고, 논문 내용에 질문할 수 있는 개인용 로컬 앱입니다. 각 사용자가 자기 PC에서 실행하고 자기 ChatGPT 구독으로 로그인합니다.
+PaperRead는 논문의 원본 PDF와 한국어 번역을 나란히 읽고, 논문 내용에 질문할 수 있는 개인용 로컬 앱입니다. arXiv 주소·번호, 공개된 PDF 직접 URL과 논문 소개 페이지 URL을 받습니다. 각 사용자가 자기 PC에서 실행하고 자기 ChatGPT 구독으로 로그인합니다.
 
 논문을 열기만 하면 번역이나 질문 요청을 보내지 않습니다. 번역 시작과 질문 전송은 사용자가 직접 누를 때만 실행됩니다. 사용자가 번역이나 질문을 요청하면 해당 논문 내용이 Codex CLI를 거쳐 OpenAI에 전송됩니다. API 키는 필요하지 않습니다.
 
 ![원본 PDF와 저장된 한국어 번역을 나란히 읽는 PaperRead 화면](docs/screenshots/reader.png)
 
 실제 로컬 실행 화면입니다. 예시 논문은 Vaswani 외, [Attention Is All You Need](https://arxiv.org/abs/1706.03762)이며, 한국어는 저장된 번역입니다.
-
-
 
 첫 화면에서 논문을 열고, 보관함에서 저장한 논문을 다시 읽습니다.
 
@@ -18,6 +16,9 @@ PaperRead는 arXiv 논문의 원본 PDF와 한국어 번역을 나란히 읽고,
 
 ![원문과 한국어 지면 옆에서 질문을 작성하는 패널](docs/screenshots/questions.png)
 
+PDF 직접 URL로 연 논문입니다. 아래는 번역 시작 전 화면입니다.
+
+![공개 PDF URL로 연 논문의 원문 읽기 화면](docs/screenshots/pdf-url.png)
 
 ## 필요한 환경
 
@@ -27,6 +28,14 @@ PaperRead는 arXiv 논문의 원본 PDF와 한국어 번역을 나란히 읽고,
 - ChatGPT 구독
 
 Codex CLI 로그인은 PaperRead 화면의 계정 메뉴에서 시작합니다. 앱은 자료 폴더 아래 `.codex-home`에서 별도 로그인을 관리하며, 터미널의 `codex login`이나 다른 Codex 로그인은 사용하지 않습니다.
+
+## 지원하는 논문 주소
+
+- arXiv 주소 또는 번호: `https://arxiv.org/abs/1706.03762`, `1706.03762v7`
+- 공개 PDF 직접 URL: `https://aclanthology.org/2020.acl-main.550.pdf`. 주소가 `.pdf`로 끝나지 않아도 응답이 PDF이면 열 수 있습니다.
+- 공개 논문 소개 페이지: [NeurIPS 예시](https://proceedings.neurips.cc/paper/2017/hash/3f5ee243547dee91fbd053c1c4a845aa-Abstract.html), [PMLR 예시](https://proceedings.mlr.press/v139/radford21a.html). 페이지의 PDF 메타데이터 또는 명확한 PDF 링크를 찾습니다. 자동으로 찾지 못하면 PDF 직접 URL을 입력하세요.
+
+HTTPS로 로그인 없이 접근할 수 있는 PDF를 지원합니다. 유료·로그인 전용 PDF, 로컬 파일 업로드, 스캔 PDF의 OCR은 지원하지 않습니다. PDF 크기 제한은 50 MiB, 쪽 수 제한은 300쪽입니다. arXiv와 외부 PDF는 별도로 저장하며, 같은 외부 PDF URL의 내용이 바뀌면 새 자료로 저장합니다. 보관함에서 다시 열면 저장된 원본과 번역을 그대로 읽습니다.
 
 ## 설치 및 실행
 
@@ -50,7 +59,7 @@ PAPERREAD_INDEX="$(pwd)/dist/client/index.html" node --import tsx src/server/mai
 - Codex CLI 인증은 같은 자료 폴더의 `.codex-home`에 저장됩니다. 이 폴더를 공유하거나 Git에 올리지 마세요.
 - `PAPERREAD_DATA`를 설정할 때 프로젝트 저장소 바깥의 폴더를 사용하세요. 앱 자료 폴더를 저장소 안에 두면 논문 파일이 Git에 포함될 수 있습니다.
 - PaperRead는 비밀번호, 쿠키, 토큰, API 키를 수집하지 않습니다. 로그아웃은 PaperRead 앱 전용 로그인만 끊습니다.
-- arXiv 원문은 논문을 열 때 취득합니다. 논문 전문은 사용자가 번역을 시작하거나 질문을 전송할 때 Codex CLI를 통해 OpenAI에 전달됩니다.
+- 원문 PDF는 논문을 열 때 해당 사이트에서 다운로드합니다. 논문 전문은 사용자가 번역을 시작하거나 질문을 전송할 때 Codex CLI를 통해 OpenAI에 전달됩니다.
 
 ## 다시 빌드하기
 
