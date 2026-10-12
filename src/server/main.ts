@@ -105,7 +105,7 @@ export function backfillTitles(store: PaperStore): number {
 export interface ServiceOptions {
   dataDirectory?: string;
   port?: number;
-  /** Absolute path to the client entry document, when one should be served. */
+  /** Path to the client entry document, when one should be served. */
   indexHtml?: string;
   log?: (event: ApiLogEvent | PipelineLogEvent) => void;
 }
@@ -163,6 +163,21 @@ export function servedAssets(assetDirectory: string) {
 }
 
 export async function startService(options: ServiceOptions = {}): Promise<Service> {
+  // Git Bash can pass /c/... in environment variables without converting it
+  // to a Windows drive path. Node's Windows fs APIs cannot read that spelling.
+  const entryPath = options.indexHtml === undefined ? undefined : resolve(
+    process.platform === 'win32'
+      ? options.indexHtml.replace(/^\/([a-z])(?=\/)/i, '$1:')
+      : options.indexHtml,
+  );
+  let clientHtml: string | undefined;
+  if (entryPath !== undefined) {
+    try {
+      clientHtml = readFileSync(entryPath, 'utf8');
+    } catch (cause) {
+      throw new Error(`화면 파일을 읽지 못했습니다: ${entryPath}. npm run build를 실행하고 PAPERREAD_INDEX 경로를 확인하세요.`, { cause });
+    }
+  }
   const dataDirectory = options.dataDirectory ?? defaultDataDirectory();
   const store = new PaperStore(dataDirectory);
   store.ensureRoot();
@@ -191,8 +206,8 @@ export async function startService(options: ServiceOptions = {}): Promise<Servic
     paperChat: translator,
     acquirer: realAcquirer(join(dataDirectory, '.pdf-cache')),
     log,
-    clientHtml: options.indexHtml === undefined ? undefined : () => readFileSync(options.indexHtml!, 'utf8'),
-    clientAssets: options.indexHtml === undefined ? undefined : servedAssets(join(dirname(resolve(options.indexHtml)), 'assets')),
+    clientHtml: clientHtml === undefined ? undefined : () => clientHtml,
+    clientAssets: entryPath === undefined ? undefined : servedAssets(join(dirname(entryPath), 'assets')),
   });
 
   const address = await server.listen(options.port ?? 0, LOOPBACK);

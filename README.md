@@ -43,7 +43,7 @@ git clone https://github.com/nkjunbc/PaperRead.git
 cd PaperRead
 npm ci
 npm run build
-PAPERREAD_INDEX="$(pwd)/dist/client/index.html" node --import tsx src/server/main.ts
+PAPERREAD_INDEX=./dist/client/index.html node --import tsx src/server/main.ts
 ```
 
 브라우저에서 <http://127.0.0.1:7327>을 엽니다. 서비스를 끝내려면 실행 중인 터미널에서 `Ctrl+C`를 누릅니다. 자세한 화면 사용법과 PowerShell 실행 방법은 [docs/사용법.md](docs/사용법.md)를 참고하세요.
