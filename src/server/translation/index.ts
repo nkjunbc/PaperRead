@@ -119,7 +119,7 @@ export function paperContext(paper: Paper): string {
   lines.push(`논문 제목: ${title ? title.slice(0, 300) : '확인 불가'}`);
   const authors = paper.authors.slice(0, 5).map((a) => a.slice(0, 80));
   lines.push(`저자: ${authors.length > 0 ? authors.join(', ') : '확인 불가'}`);
-  lines.push(`arXiv: ${paper.arxivId}v${paper.version}`);
+  if (paper.arxivId !== null && paper.version !== null) lines.push(`arXiv: ${paper.arxivId}v${paper.version}`);
   return lines.join('\n');
 }
 

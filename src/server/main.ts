@@ -15,6 +15,8 @@ import { normalizeArxiv } from './arxiv/index';
 import { extractPublication, identifyPublication, loadPublication } from './publication/index';
 import type { PublicNetworkOptions } from './publication/network';
 import { extractPdf, inferTitle } from './pdf/index';
+import { identifyLocalPdf } from './pdf/upload';
+import { notFound } from './store/errors';
 
 /**
  * App-owned data folder. Deliberately outside the source tree and outside the
@@ -40,6 +42,8 @@ export function realAcquirer(directory: string, publicationOptions: PublicNetwor
   const isPublicationUrl = (input: string) => /^https?:\/\//i.test(input.trim()) && !/^https?:\/\/(?:arxiv\.org|export\.arxiv\.org)(?:[/:]|$)/i.test(input.trim());
   return {
     identify(input: string): string | null {
+      const localKey = identifyLocalPdf(input.trim());
+      if (localKey !== null) return localKey;
       const publicationKey = identifyPublication(input.trim());
       if (publicationKey !== null) return publicationKey;
       try {
@@ -50,6 +54,7 @@ export function realAcquirer(directory: string, publicationOptions: PublicNetwor
       }
     },
     async resolve(input: string): Promise<Paper> {
+      if (identifyLocalPdf(input.trim()) !== null) throw notFound('첨부한 PDF를 찾을 수 없습니다. 파일을 다시 첨부하세요.');
       if (isPublicationUrl(input)) return (await loadPublication(input, publicationOptions)).paper;
       return resolveArxiv(input);
     },

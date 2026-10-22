@@ -14,6 +14,7 @@ import type {
   Snapshot,
   Translation,
 } from '../../shared/contracts';
+import { MAX_PDF_BYTES } from '../../shared/pdf';
 
 /** The header the local service requires on every state-changing request. */
 export const TOKEN_HEADER = 'x-paperread-token';
@@ -80,7 +81,7 @@ export class ApiClient {
     return this.token !== null;
   }
 
-  private async request<T>(path: string, init: { method?: string; body?: unknown; credential?: boolean } = {}): Promise<T> {
+  private async request<T>(path: string, init: { method?: string; body?: unknown; credential?: boolean; pdfFile?: File } = {}): Promise<T> {
     const method = init.method ?? 'GET';
     const mutating = method !== 'GET' && method !== 'HEAD';
     const headers: Record<string, string> = { accept: 'application/json' };
@@ -88,6 +89,10 @@ export class ApiClient {
     // state (a login attempt); `credential` opts that single read in.
     if ((mutating || init.credential === true) && this.token !== null) headers[TOKEN_HEADER] = this.token;
     if (mutating && init.body !== undefined) headers['content-type'] = 'application/json';
+    if (init.pdfFile !== undefined) {
+      headers['content-type'] = 'application/pdf';
+      headers['x-paperread-filename'] = encodeURIComponent(init.pdfFile.name);
+    }
 
     let response: Response;
     try {
@@ -96,7 +101,7 @@ export class ApiClient {
         headers,
         // Same-origin only; the service is loopback and never cross-site.
         credentials: 'same-origin',
-        body: init.body === undefined ? undefined : JSON.stringify(init.body),
+        body: init.pdfFile ?? (init.body === undefined ? undefined : JSON.stringify(init.body)),
       });
     } catch {
       // The underlying message can echo the request; never let it through.
@@ -150,6 +155,12 @@ export class ApiClient {
 
   openPaper(input: string): Promise<{ paper: Snapshot['paper'] }> {
     return this.request('/api/papers/open', { method: 'POST', body: { input } });
+  }
+
+  uploadPaper(file: File): Promise<{ paper: Snapshot['paper'] }> {
+    if (file.size > MAX_PDF_BYTES) return Promise.reject({ code: 'TOO_LARGE', message: 'PDF 파일은 50 MiB 이하만 첨부할 수 있습니다.', retryable: false } satisfies AppError);
+    if (file.size === 0) return Promise.reject({ code: 'INVALID_INPUT', message: '첨부할 PDF 파일이 비어 있습니다.', retryable: false } satisfies AppError);
+    return this.request('/api/papers/upload', { method: 'POST', pdfFile: file });
   }
 
   deletePaper(paperKey: string): Promise<{ deleted: true }> {

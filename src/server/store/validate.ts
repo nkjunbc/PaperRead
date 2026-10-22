@@ -86,9 +86,13 @@ export function validatePaper(paper: unknown): Paper {
   if (!paper || typeof paper !== 'object') throw invalidInput('paper must be an object');
   const p = paper as Paper;
   assertSafeKey(p.paperKey);
-  if (p.sourceKind !== undefined && p.sourceKind !== 'arxiv' && p.sourceKind !== 'publication') throw invalidInput('paper.sourceKind is invalid');
+  if (p.sourceKind !== undefined && p.sourceKind !== 'arxiv' && p.sourceKind !== 'publication' && p.sourceKind !== 'local') throw invalidInput('paper.sourceKind is invalid');
   if (p.sourceKind === 'publication') {
     if (p.arxivId !== null || p.version !== null || !/^pdf-[a-f0-9]{64}-[a-f0-9]{64}$/.test(p.paperKey)) throw invalidInput('publication identity is invalid');
+  } else if (p.sourceKind === 'local') {
+    if (p.arxivId !== null || p.version !== null || !/^local-pdf-[a-f0-9]{64}$/.test(p.paperKey)) throw invalidInput('local PDF identity is invalid');
+    const hash = p.paperKey.slice('local-pdf-'.length);
+    if (p.sourceUrl !== `local-pdf:${hash}` || (p.pdfSha256 !== null && p.pdfSha256 !== hash)) throw invalidInput('local PDF hash is invalid');
   } else {
     if (!isNonEmptyString(p.arxivId)) throw invalidInput('paper.arxivId must be a non-empty string');
     if (!isInt(p.version) || p.version < 1) throw invalidInput('paper.version must be a positive integer');

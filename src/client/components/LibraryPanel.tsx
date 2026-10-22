@@ -179,7 +179,7 @@ export function LibraryPanel({
                   >
                     <span className="library-card__title">{title}</span>
                     <span className="library-card__meta">
-                      {paper.sourceKind === 'publication' ? new URL(paper.sourceUrl).hostname : `${paper.arxivId}v${paper.version}`} · {paperStatus(paper)}
+                      {paper.sourceKind === 'local' ? '첨부한 PDF' : paper.sourceKind === 'publication' ? new URL(paper.sourceUrl).hostname : `${paper.arxivId}v${paper.version}`} · {paperStatus(paper)}
                       {paper.pageCount !== null ? ` · ${paper.pageCount}쪽` : ''}
                     </span>
                     <span className="library-card__date">{formatStoredDate(paper.createdAt)}</span>

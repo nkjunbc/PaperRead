@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { getDocument, OPS } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import type { Block, Coverage, Region } from '../../shared/contracts';
+import { MAX_PDF_BYTES, MAX_PDF_PAGES } from '../../shared/pdf';
 import { SourceError } from '../arxiv/index';
 
 export const EXTRACTION_VERSION = 'pdfjs6-lines-v4';
@@ -490,7 +491,7 @@ function findTables(lines:Line[], kindOf:(l:Line)=>LineKind, gutter:Gutter|null,
 
 /** Parse as inert data only. Never request annotations/actions/attachments or run PDF JS. */
 export async function extractPdf(bytes:Uint8Array, paperKey:string, options:ExtractionOptions={}):Promise<PdfExtraction> {
-  const maxPages=options.maxPages??300, maxBytes=options.maxBytes??50*1024*1024;
+  const maxPages=options.maxPages??MAX_PDF_PAGES, maxBytes=options.maxBytes??MAX_PDF_BYTES;
   if(!Number.isInteger(maxPages)||maxPages<1||!Number.isSafeInteger(maxBytes)||maxBytes<1) throw new SourceError('INVALID_INPUT','PDF 제한 설정이 올바르지 않습니다.');
   if(bytes.byteLength>maxBytes) throw new SourceError('TOO_LARGE','PDF 크기 제한을 초과했습니다.');
   if(!/^%PDF-\d\.\d/.test(Buffer.from(bytes.subarray(0,8)).toString('ascii'))) throw new SourceError('UNSUPPORTED_PDF','PDF가 아닌 응답입니다.',false,'NOT_PDF');

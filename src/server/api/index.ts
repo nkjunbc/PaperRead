@@ -9,6 +9,8 @@ import { JobManager } from '../jobs/state';
 import { PROMPT_VERSION, TranslationPipeline, type PipelineLogEvent } from '../translation/index';
 import { isExcludedModel } from '../codex/index';
 import { EXTRACTION_VERSION } from '../pdf/index';
+import { extractUploadedPdf, uploadedPaper } from '../pdf/upload';
+import { MAX_PDF_BYTES } from '../../shared/pdf';
 import { ChatService, LOGGED_OUT_ERROR, RESTARTED_ERROR, type ChatLogEvent } from '../chat/index';
 import { HttpError, toHttp } from './errors';
 import { TOKEN_HEADER, assertCredentialHeader, assertLocalRequest } from './guard';
@@ -174,7 +176,7 @@ function requireJobIdField(body: Record<string, unknown>, field: string): string
 }
 
 /** Path words kept verbatim in the request log; every other segment is an identifier. */
-const ROUTE_WORDS = new Set(['api', 'papers', 'open', 'pdf', 'translation', 'restart', 'highlights', 'chat', 'jobs', 'pause', 'resume', 'connection', 'login', 'logout', 'cancel', 'assets', 'index.html']);
+const ROUTE_WORDS = new Set(['api', 'papers', 'open', 'upload', 'pdf', 'translation', 'restart', 'highlights', 'chat', 'jobs', 'pause', 'resume', 'connection', 'login', 'logout', 'cancel', 'assets', 'index.html']);
 
 function requireInt(body: Record<string, unknown>, field: string, min: number): number {
   const value = body[field];
@@ -265,6 +267,40 @@ async function readJsonBody(request: IncomingMessage): Promise<Record<string, un
   return parsed as Record<string, unknown>;
 }
 
+/** The binary upload has its own limit; JSON routes keep their small request limit. */
+async function readPdfBody(request: IncomingMessage): Promise<Buffer> {
+  const tooLarge = () => appError('TOO_LARGE', 'PDF 파일은 50 MiB 이하만 첨부할 수 있습니다.', false);
+  if (Number(request.headers['content-length']) > MAX_PDF_BYTES) {
+    request.resume();
+    throw tooLarge();
+  }
+  const chunks: Buffer[] = [];
+  let size = 0;
+  // Keep the connection available to return a structured error after exceeding the limit.
+  for await (const chunk of request.iterator({ destroyOnReturn: false })) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > MAX_PDF_BYTES) {
+      request.resume();
+      throw tooLarge();
+    }
+    chunks.push(buffer);
+  }
+  if (size === 0) throw invalidInput('첨부할 PDF 파일이 비어 있습니다.');
+  return Buffer.concat(chunks, size);
+}
+
+function readUploadFilename(request: IncomingMessage): string {
+  const name = request.headers['x-paperread-filename'];
+  if (name === undefined) return '';
+  if (typeof name !== 'string' || name.length > 4096) throw invalidInput('PDF 파일 이름이 올바르지 않습니다.');
+  try {
+    return decodeURIComponent(name);
+  } catch {
+    throw invalidInput('PDF 파일 이름이 올바르지 않습니다.');
+  }
+}
+
 function requireString(body: Record<string, unknown>, field: string, max = 512): string {
   const value = body[field];
   if (typeof value !== 'string') throw invalidInput(`${field} 값은 문자열이어야 합니다.`);
@@ -302,6 +338,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   const chat = new ChatService({ store, chat: options.paperChat, connection: () => translator.connection(), log });
   /** Per-revision identities for background acquisition/extraction work. */
   const acquiring = new Map<string, number>();
+  const uploads = new Map<string, Promise<Paper>>();
   let nextAcquisition = 0;
 
   const server = createServer((request, response) => {
@@ -331,7 +368,8 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
       route = `${method} /${segments.map((s) => (ROUTE_WORDS.has(s) ? s : ':id')).join('/')}`;
 
       const mutating = method !== 'GET' && method !== 'HEAD';
-      assertLocalRequest(request, token, mutating);
+      const uploading = method === 'POST' && segments.length === 3 && segments[0] === 'api' && segments[1] === 'papers' && segments[2] === 'upload';
+      assertLocalRequest(request, token, mutating, uploading ? 'application/pdf' : 'application/json');
 
       const result = await route_(method, segments, request);
       if (result.kind === 'json') {
@@ -406,6 +444,10 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
 
     // ----------------------------------------------------------------- papers
     if (segments[1] === 'papers') {
+      if (segments.length === 3 && segments[2] === 'upload' && method === 'POST') {
+        const filename = readUploadFilename(request);
+        return json({ paper: await uploadPaper(await readPdfBody(request), filename) });
+      }
       if (segments.length === 2 && method === 'GET') return json(listPapers());
       if (segments.length === 3 && segments[2] === 'open' && method === 'POST') {
         // 'open' is a reserved action word, never a paperKey.
@@ -542,6 +584,27 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
       stored.extractionVersion === EXTRACTION_VERSION &&
       store.listBlocks(stored.paperKey).length > 0
     );
+  }
+
+  /** Parse before saving: damaged/oversized PDFs must not leave a broken library entry. */
+  async function uploadPaper(pdf: Buffer, filename: string): Promise<Paper> {
+    const pending = uploadedPaper(pdf, filename);
+    const stored = store.getPaper(pending.paperKey);
+    if (stored !== null) return openPaper({ input: pending.paperKey });
+    const running = uploads.get(pending.paperKey);
+    if (running !== undefined) return running;
+    const work = (async () => {
+      const { paper, blocks } = await extractUploadedPdf(pending, pdf);
+      store.savePaper(paper, pdf);
+      store.saveBlocks(paper.paperKey, blocks);
+      return paper;
+    })();
+    uploads.set(pending.paperKey, work);
+    try {
+      return await work;
+    } finally {
+      uploads.delete(pending.paperKey);
+    }
   }
 
   /**

@@ -380,6 +380,26 @@ export function App(): JSX.Element {
     }
   }, [input, enterPaper, refresh, loadLibrary, fail]);
 
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const uploadPaper = useCallback(async (file: File) => {
+    setBusy(true);
+    setUploading(true);
+    setError(null);
+    try {
+      const { paper: opened } = await client.uploadPaper(file);
+      enterPaper(opened.paperKey);
+      setInput('');
+      await refresh(opened.paperKey);
+      void loadLibrary();
+    } catch (cause) {
+      fail(cause);
+    } finally {
+      setBusy(false);
+      setUploading(false);
+    }
+  }, [enterPaper, refresh, loadLibrary, fail]);
+
   /** A stored paper opens through the service: from disk when its extraction is current, or
    * re-extracted from the saved PDF when the format moved on — never re-downloaded. */
   const openStored = useCallback(
@@ -1126,6 +1146,22 @@ export function App(): JSX.Element {
           <button type="submit" className="primary" disabled={busy || !client.canMutate || input.trim().length === 0}>
             논문 열기
           </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/pdf,.pdf"
+            hidden
+            aria-label="첨부할 PDF 파일 선택"
+            disabled={busy || !client.canMutate}
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = '';
+              if (file !== undefined) void uploadPaper(file);
+            }}
+          />
+          <button type="button" disabled={busy || !client.canMutate} onClick={() => fileInputRef.current?.click()}>
+            {uploading ? 'PDF 여는 중…' : 'PDF 첨부'}
+          </button>
         </form>
         <div className="topbar__right">
           {paperKey !== null ? (
@@ -1197,7 +1233,7 @@ export function App(): JSX.Element {
               <ol className="steps">
                 <li>
                   <strong>논문 열기</strong>
-                  위 입력란에 공개 PDF 주소, 논문 페이지 주소 또는 arXiv 번호를 넣습니다. 번역을 시작하기 전에는 논문 내용을 Codex로 보내지 않습니다.
+                  위 입력란에 논문 주소나 arXiv 번호를 넣거나, PDF 첨부로 내 PC의 파일을 선택합니다. 번역을 시작하거나 질문을 보내기 전에는 논문 내용을 Codex로 보내지 않습니다.
                 </li>
                 <li>
                   <strong>Codex 로그인</strong>

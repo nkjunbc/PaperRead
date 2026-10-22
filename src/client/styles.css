@@ -78,6 +78,7 @@ button.primary {
 
 .topbar {
   display: flex;
+  flex-shrink: 0;
   flex-wrap: nowrap;
   align-items: center;
   gap: 14px;
@@ -113,10 +114,10 @@ button.primary {
   flex: 1 1 320px;
   gap: 8px;
   min-width: 0;
-  max-width: 640px;
+  max-width: 760px;
 }
 
-.open-form input {
+.open-form input[type="text"] {
   flex: 1 1 auto;
   min-width: 0;
   padding: 7px 12px;
@@ -125,8 +126,13 @@ button.primary {
   background: var(--bg);
 }
 
-.open-form input:focus {
+.open-form input[type="text"]:focus {
   background: var(--panel);
+}
+
+.open-form button {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .topbar__right {

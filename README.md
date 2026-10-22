@@ -1,6 +1,6 @@
 # PaperRead
 
-PaperRead는 논문의 원본 PDF와 한국어 번역을 나란히 읽고, 논문 내용에 질문할 수 있는 개인용 로컬 앱입니다. arXiv 주소·번호, 공개된 PDF 직접 URL과 논문 소개 페이지 URL을 받습니다. 각 사용자가 자기 PC에서 실행하고 자기 ChatGPT 구독으로 로그인합니다.
+PaperRead는 논문의 원본 PDF와 한국어 번역을 나란히 읽고, 논문 내용에 질문할 수 있는 개인용 로컬 앱입니다. arXiv 주소·번호, 공개된 PDF 직접 URL과 논문 소개 페이지 URL을 받으며, 내 PC의 PDF 파일도 첨부할 수 있습니다. 각 사용자가 자기 PC에서 실행하고 자기 ChatGPT 구독으로 로그인합니다.
 
 논문을 열기만 하면 번역이나 질문 요청을 보내지 않습니다. 번역 시작과 질문 전송은 사용자가 직접 누를 때만 실행됩니다. 사용자가 번역이나 질문을 요청하면 해당 논문 내용이 Codex CLI를 거쳐 OpenAI에 전송됩니다. API 키는 필요하지 않습니다.
 
@@ -26,13 +26,14 @@ PaperRead는 논문의 원본 PDF와 한국어 번역을 나란히 읽고, 논�
 
 Codex CLI 로그인은 PaperRead 화면의 계정 메뉴에서 시작합니다. 앱은 자료 폴더 아래 `.codex-home`에서 별도 로그인을 관리하며, 터미널의 `codex login`이나 다른 Codex 로그인은 사용하지 않습니다.
 
-## 지원하는 논문 주소
+## 지원하는 논문 입력
 
 - arXiv 주소 또는 번호: `https://arxiv.org/abs/1706.03762`, `1706.03762v7`
+- 로컬 PDF 파일: 화면 위의 **PDF 첨부**를 누르고 내 PC의 파일을 선택합니다. 같은 PDF는 파일 이름이 달라도 저장한 논문과 번역을 재사용합니다.
 - 공개 PDF 직접 URL: `https://aclanthology.org/2020.acl-main.550.pdf`. 주소가 `.pdf`로 끝나지 않아도 응답이 PDF이면 열 수 있습니다.
 - 공개 논문 소개 페이지: [NeurIPS 예시](https://proceedings.neurips.cc/paper/2017/hash/3f5ee243547dee91fbd053c1c4a845aa-Abstract.html), [PMLR 예시](https://proceedings.mlr.press/v139/radford21a.html). 페이지의 PDF 메타데이터 또는 명확한 PDF 링크를 찾습니다. 자동으로 찾지 못하면 PDF 직접 URL을 입력하세요.
 
-HTTPS로 로그인 없이 접근할 수 있는 PDF를 지원합니다. 유료·로그인 전용 PDF, 로컬 파일 업로드, 스캔 PDF의 OCR은 지원하지 않습니다. PDF 크기 제한은 50 MiB, 쪽 수 제한은 300쪽입니다. arXiv와 외부 PDF는 별도로 저장하며, 같은 외부 PDF URL의 내용이 바뀌면 새 자료로 저장합니다. 보관함에서 다시 열면 저장된 원본과 번역을 그대로 읽습니다.
+URL로 여는 PDF는 HTTPS로 로그인 없이 접근할 수 있어야 합니다. 유료·로그인 전용 PDF의 URL 접근과 스캔 PDF의 OCR은 지원하지 않습니다. URL과 첨부 파일 모두 PDF 크기 제한은 50 MiB, 쪽 수 제한은 300쪽입니다. arXiv, 외부 PDF, 첨부 파일은 별도로 저장하며, 같은 외부 PDF URL이나 첨부 파일의 내용이 바뀌면 새 자료로 저장합니다. 보관함에서 다시 열면 저장된 원본과 번역을 그대로 읽습니다.
 
 ## 설치 및 실행
 

@@ -65,10 +65,10 @@ const STALE_CREDENTIAL = '요청 자격이 맞지 않아 거절했습니다. 이
  *     the local client entry page — defeats a no-CORS form/`<img>` submission,
  *     which cannot set a custom header at all.
  *
- * JSON content type is required too, so a simple cross-site form post is
+ * The route's content type is required too, so a simple cross-site form post is
  * rejected before the body is ever read.
  */
-export function assertLocalRequest(request: IncomingMessage, token: string, mutating: boolean): void {
+export function assertLocalRequest(request: IncomingMessage, token: string, mutating: boolean, mediaType: 'application/json' | 'application/pdf' = 'application/json'): void {
   if (!isLoopbackHost(request.headers.host)) {
     throw forbidden('로컬 요청이 아닙니다. 이 서비스는 이 PC에서만 사용할 수 있습니다.');
   }
@@ -87,11 +87,9 @@ export function assertLocalRequest(request: IncomingMessage, token: string, muta
     throw forbidden(STALE_CREDENTIAL);
   }
   const contentType = request.headers['content-type'];
-  if (typeof contentType === 'string' && contentType.length > 0) {
-    const media = contentType.split(';')[0].trim().toLowerCase();
-    if (media !== 'application/json') {
-      throw unsupportedMedia('상태 변경 요청은 application/json만 허용합니다.');
-    }
+  const media = typeof contentType === 'string' ? contentType.split(';')[0].trim().toLowerCase() : '';
+  if ((mediaType === 'application/pdf' || media !== '') && media !== mediaType) {
+    throw unsupportedMedia(`이 요청은 ${mediaType}만 허용합니다.`);
   }
 }
 
