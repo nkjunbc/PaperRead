@@ -4,9 +4,9 @@ PaperRead는 논문의 원본 PDF와 한국어 번역을 나란히 읽고, 논�
 
 논문을 열기만 하면 번역이나 질문 요청을 보내지 않습니다. 번역 시작과 질문 전송은 사용자가 직접 누를 때만 실행됩니다. 사용자가 번역이나 질문을 요청하면 해당 논문 내용이 Codex CLI를 거쳐 OpenAI에 전송됩니다. API 키는 필요하지 않습니다.
 
-![원본 PDF와 저장된 한국어 번역을 나란히 읽는 PaperRead 화면](docs/screenshots/reader.png)
+![원본 PDF와 저장된 한국어 번역을 나란히 놓고 원문 하이라이트와 한국어 메모를 띄운 PaperRead 화면](docs/screenshots/reader.png)
 
-실제 로컬 실행 화면입니다. 예시 논문은 Vaswani 외, [Attention Is All You Need](https://arxiv.org/abs/1706.03762)이며, 한국어는 저장된 번역입니다.
+실제 로컬 실행 화면입니다. 예시 논문은 Vaswani 외, [Attention Is All You Need](https://arxiv.org/abs/1706.03762)이며, 한국어는 저장된 번역입니다. 원문 한 줄에 형광펜을 칠하고, 같은 내용의 한국어 문장에 메모를 단 모습입니다.
 
 첫 화면에서 논문을 열고, 보관함에서 저장한 논문을 다시 읽습니다.
 
@@ -15,6 +15,17 @@ PaperRead는 논문의 원본 PDF와 한국어 번역을 나란히 읽고, 논�
 읽기 화면 옆에서 질문을 작성합니다. 아래는 질문 전송 전 화면입니다.
 
 ![원문과 한국어 지면 옆에서 질문을 작성하는 패널](docs/screenshots/questions.png)
+
+## 읽으면서 할 수 있는 일
+
+- 원문과 한국어 양쪽에 형광펜과 펜으로 표시하고, 하이라이트에 메모를 답니다. 형광펜과 펜은 색 4가지 중에서 고르고 두께를 조절합니다.
+- 글자를 끌어 선택하면 하이라이트, 메모 달기, 질문에 인용, 복사 메뉴가 열립니다.
+- **메모 모음**에서 논문 전체의 하이라이트와 메모를 쪽 순서로 보고, 누르면 그 자리로 이동합니다.
+- `Ctrl+F`로 원문과 한국어를 함께 찾습니다.
+- 계정 메뉴에서 새 번역과 질문에 쓸 기본 모델을 정합니다.
+- 번역은 앞쪽 두 쪽을 함께 시작해 첫 화면을 더 빨리 볼 수 있고, 끝난 쪽부터 한국어 지면이 나타납니다.
+
+도구 막대와 메뉴는 Microsoft Edge의 PDF 보기와 비슷한 모양입니다. 자세한 사용법은 [docs/사용법.md](docs/사용법.md)를 참고하세요.
 
 
 ## 필요한 환경
@@ -52,8 +63,8 @@ PAPERREAD_INDEX=./dist/client/index.html node --import tsx src/server/main.ts
 ## 데이터와 계정
 
 - 서버는 현재 PC의 `127.0.0.1`에서만 열립니다. 이 앱은 여러 사용자가 접속하는 원격 서버로 배포하는 용도가 아닙니다.
-- 논문, 번역, 하이라이트와 질문 대화는 기본적으로 `%LOCALAPPDATA%\PaperRead`에 저장됩니다.
-- macOS 자료 경로는 `~/.local/share/paperread`이며, `XDG_DATA_HOME`을 설정했다면 그 경로 아래 `paperread`를 사용합니다(`src/server/main.ts:21`).
+- 논문, 번역, 하이라이트·메모·필기, 질문 대화, 기본 모델 설정은 기본적으로 `%LOCALAPPDATA%\PaperRead`에 저장됩니다.
+- macOS 자료 경로는 `~/.local/share/paperread`이며, `XDG_DATA_HOME`을 설정했다면 그 경로 아래 `paperread`를 사용합니다.
 - Codex CLI 인증은 같은 자료 폴더의 `.codex-home`에 저장됩니다. 이 폴더를 공유하거나 Git에 올리지 마세요.
 - `PAPERREAD_DATA`를 설정할 때 프로젝트 저장소 바깥의 폴더를 사용하세요. 앱 자료 폴더를 저장소 안에 두면 논문 파일이 Git에 포함될 수 있습니다.
 - PaperRead는 비밀번호, 쿠키, 토큰, API 키를 수집하지 않습니다. 로그아웃은 PaperRead 앱 전용 로그인만 끊습니다.

@@ -383,6 +383,20 @@ function readingOrder(spans: SpanBox[]): { lines: Line[]; locate(point: Point): 
   return { lines, locate };
 }
 
+/**
+ * Whether a run reads across the page, as a line does: its last glyph stands further along from
+ * its first than up or down. pdf.js turns some runs to read up the page, as the stamp arXiv sets
+ * up a first page's left margin: the box of such a run is as tall as the lines beside it, and
+ * taken as a line it would make them all one.
+ */
+function runsAcross(span: SpanBox): boolean {
+  const glyphs = span.glyphs ?? [];
+  if (glyphs.length < 2) return true;
+  const first = glyphs[0].rect;
+  const last = glyphs[glyphs.length - 1].rect;
+  return Math.abs(last.left - first.left) >= Math.abs(last.top - first.top);
+}
+
 /** Either end of a sweep: a point on the page, or the page's first or last line for a page
  * that a drag crossing pages begins before or ends after. */
 export type SweepEnd = Point | 'start' | 'end';
@@ -397,10 +411,11 @@ export type SweepEnd = Point | 'start' | 'end';
  * stream order, so a DOM range between two nearby runs can span half a page of equation
  * pieces and the other column. Returns one rect per swept line plus the swept text. A rect
  * takes its height from the line's text runs; pdf.js glyph boxes are taller than the line,
- * and neighbouring lines' boxes would overlap.
+ * and neighbouring lines' boxes would overlap. A run that reads up or down the page is on no
+ * line and is never swept (runsAcross).
  */
 export function sweepSelection(spans: SpanBox[], from: SweepEnd, to: SweepEnd): { rects: PixelRect[]; text: string } | null {
-  const layout = readingOrder(spans.filter((span) => span.rect.width > 0 && span.rect.height > 0 && span.text.trim().length > 0));
+  const layout = readingOrder(spans.filter((span) => span.rect.width > 0 && span.rect.height > 0 && span.text.trim().length > 0 && runsAcross(span)));
   if (layout === null) return null;
   const { lines, locate } = layout;
   const place = (end: SweepEnd) => (end === 'start' ? { line: 0, x: -Infinity } : end === 'end' ? { line: lines.length - 1, x: Infinity } : { line: locate(end), x: end.x });

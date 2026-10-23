@@ -39,7 +39,7 @@ import {
   type Pane,
   type ScrollAnchor,
 } from './lib/sync';
-import { CONTROL_LIMITS, clampSplit, clampZoom, isReadable, nextPage, onePaneBesideChat, paragraphJumpDelay, shouldPoll } from './lib/view';
+import { CONTROL_LIMITS, FitWidth, clampSplit, clampZoom, isReadable, nextPage, onePaneBesideChat, paragraphJumpDelay, shouldPoll } from './lib/view';
 
 const POLL_MS = 1_500;
 const LOGIN_POLL_MS = 2_000;
@@ -161,7 +161,6 @@ export function App(): JSX.Element {
   const chatButtonRef = useRef<HTMLButtonElement | null>(null);
   const chatDockRef = useRef<HTMLElement | null>(null);
   const quoteCount = useRef(0);
-  const refitTimer = useRef<number | undefined>(undefined);
   // Below the sheet breakpoint the panel covers the reader; the covered reader is inert.
   const chatSheet = useMediaQuery(CHAT_SHEET_QUERY);
   const chatDocked = (chatOpen || notebookOpen) && !chatSheet;
@@ -203,6 +202,7 @@ export function App(): JSX.Element {
   const [leader, setLeader] = useState<Pane | null>(null);
   const [narrowPane, setNarrowPane] = useState<Pane>('source');
 
+  const sourcePane = useRef<HTMLElement | null>(null);
   const pdfBody = useRef<HTMLDivElement | null>(null);
   const textBody = useRef<HTMLDivElement | null>(null);
   const pageNodes = useRef(new Map<number, HTMLDivElement>());
@@ -904,13 +904,27 @@ export function App(): JSX.Element {
     return available <= 0 ? null : clampZoom(available / size.width);
   }, [currentPage]);
 
+  const [widthFit] = useState(() => new FitWidth(() => fitWidthRef.current()));
+  useEffect(() => () => widthFit.cancel(), [widthFit]);
+
   /** Zoom so the current page's width fills the source pane, the usual reading default. */
   const fitWidth = useCallback(() => {
     const zoomToFit = fitZoom();
-    if (zoomToFit !== null) changeZoom(zoomToFit - zoomRef.current);
-  }, [changeZoom, fitZoom]);
+    if (zoomToFit === null) return;
+    widthFit.fitted();
+    changeZoom(zoomToFit - zoomRef.current);
+  }, [changeZoom, fitZoom, widthFit]);
   const fitWidthRef = useRef(fitWidth);
   fitWidthRef.current = fitWidth;
+
+  /** 축소 and 확대, by button or key: the zoom stays as the pane changes, until 폭 맞춤. */
+  const zoomByHand = useCallback(
+    (delta: number) => {
+      widthFit.zoomedByHand();
+      changeZoom(delta);
+    },
+    [changeZoom, widthFit],
+  );
 
   // The first time a document's page sizes are known, start at fit-width rather than 100%.
   const fittedDoc = useRef<PDFDocumentProxy | null>(null);
@@ -1031,14 +1045,9 @@ export function App(): JSX.Element {
 
   // ---------------------------------------------------------- question panel
 
-  /**
-   * Open or shut the question panel. The docked panel narrows the reading panes; a source page
-   * that was fitted to its pane's width is fitted again once the panel has finished moving.
-   */
+  /** Open or shut the question panel. */
   const showChat = useCallback(
     (open: boolean, reading?: Pane) => {
-      const zoomToFit = fitZoom();
-      const fitted = zoomToFit !== null && Math.abs(zoomToFit - zoomRef.current) < 0.005;
       if (open) {
         setNotebookOpen(false);
         annotations.setMode('select');
@@ -1056,12 +1065,9 @@ export function App(): JSX.Element {
         const active = document.activeElement;
         if (active === null || active === document.body || chatDockRef.current?.contains(active) === true) chatButtonRef.current?.focus();
       }
-      window.clearTimeout(refitTimer.current);
-      if (fitted) refitTimer.current = window.setTimeout(() => fitWidthRef.current(), prefersReducedMotion() ? 0 : CHAT_TRANSITION_MS + 40);
     },
-    [fitZoom],
+    [],
   );
-  useEffect(() => () => window.clearTimeout(refitTimer.current), []);
 
   const closeChat = useCallback(() => showChat(false), [showChat]);
   const toggleChat = useCallback(() => showChat(!chatOpen), [showChat, chatOpen]);
@@ -1097,6 +1103,16 @@ export function App(): JSX.Element {
     return () => observer.disconnect();
   }, [paperKey]);
 
+  // The original's pane narrows or widens (a docked panel opens or shuts, the window or the split
+  // changes): a zoom that follows it is fitted again once a panel has finished sliding.
+  useEffect(() => {
+    const pane = sourcePane.current;
+    if (pane === null || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => widthFit.resized(pane.clientWidth, prefersReducedMotion() ? 0 : CHAT_TRANSITION_MS + 40));
+    observer.observe(pane);
+    return () => observer.disconnect();
+  }, [paperKey, widthFit]);
+
   // Global keyboard shortcuts, skipped while the reader is typing or a dialog is open.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -1124,10 +1140,10 @@ export function App(): JSX.Element {
       switch (event.key) {
         case '+':
         case '=':
-          changeZoom(CONTROL_LIMITS.zoom.step);
+          zoomByHand(CONTROL_LIMITS.zoom.step);
           break;
         case '-':
-          changeZoom(-CONTROL_LIMITS.zoom.step);
+          zoomByHand(-CONTROL_LIMITS.zoom.step);
           break;
         case 'PageDown':
           goToPage(nextPage(currentPage, 1, pageCount));
@@ -1142,7 +1158,7 @@ export function App(): JSX.Element {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [changeZoom, currentPage, pageCount, goToPage, accountOpen, loginAttempt, replacement, deleteConfirmation, renameTarget, chatOpen, closeChat]);
+  }, [zoomByHand, currentPage, pageCount, goToPage, accountOpen, loginAttempt, replacement, deleteConfirmation, renameTarget, chatOpen, closeChat]);
 
   // ------------------------------------------------------------------ view
 
@@ -1377,17 +1393,17 @@ export function App(): JSX.Element {
               onPointerDownCapture={paneMoved}
               onKeyDownCapture={paneMoved}
             >
-              <section className={`pane ${narrowPane === 'source' ? '' : 'hidden'}`} style={{ flex: `0 0 ${split * 100}%` }} aria-label="원본 PDF">
+              <section ref={sourcePane} className={`pane ${narrowPane === 'source' ? '' : 'hidden'}`} style={{ flex: `0 0 ${split * 100}%` }} aria-label="원본 PDF">
                 <div className="pane-head pane-head--source">
                   <span className="pane-title">원본</span>
                   <div className="pane-tools" role="group" aria-label="확대 조절">
-                    <button type="button" onClick={() => changeZoom(-CONTROL_LIMITS.zoom.step)} aria-label="축소" title="축소">
+                    <button type="button" onClick={() => zoomByHand(-CONTROL_LIMITS.zoom.step)} aria-label="축소" title="축소">
                       <IconMinus />
                     </button>
                     <span data-testid="zoom" className="pane-readout">
                       {Math.round(zoom * 100)}%
                     </span>
-                    <button type="button" onClick={() => changeZoom(CONTROL_LIMITS.zoom.step)} aria-label="확대" title="확대">
+                    <button type="button" onClick={() => zoomByHand(CONTROL_LIMITS.zoom.step)} aria-label="확대" title="확대">
                       <IconPlus size={16} thin />
                     </button>
                     <button type="button" onClick={fitWidth} aria-label="폭 맞춤" title="폭 맞춤">

@@ -20,6 +20,46 @@ export function clampSplit(value: number): number {
 }
 
 /**
+ * The original's zoom against its pane's width. A zoom the reader did not set by hand (the first
+ * fit of a paper, 폭 맞춤) is fitted to the pane again whenever the pane's width changes, both
+ * ways: a docked panel opens or shuts, the window or the split changes. `refit` waits until the
+ * width has held still for `settleMs`, so a panel's slide or a drag fits once. A zoom set by hand
+ * (축소, 확대) stays until 폭 맞춤.
+ */
+export class FitWidth {
+  private width: number | null = null;
+  private follows = true;
+  private timer: ReturnType<typeof setTimeout> | undefined;
+
+  constructor(private readonly refit: () => void) {}
+
+  /** The zoom was just fitted to the pane's width: it follows the pane from now on. */
+  fitted(): void {
+    this.follows = true;
+  }
+
+  /** The reader zoomed by hand: the zoom stays, and a fit still waiting is given up. */
+  zoomedByHand(): void {
+    this.follows = false;
+    this.cancel();
+  }
+
+  /** The pane measures `width` now. Its first measure, or the same width again, changes nothing. */
+  resized(width: number, settleMs: number): void {
+    const before = this.width;
+    this.width = width;
+    if (before === null || before === width || !this.follows) return;
+    this.cancel();
+    this.timer = setTimeout(this.refit, settleMs);
+  }
+
+  cancel(): void {
+    clearTimeout(this.timer);
+    this.timer = undefined;
+  }
+}
+
+/**
  * Below this width the reader shows one pane at a time beside the docked question panel. Two
  * panes in less room each fit their page to under ~550 px, and the Korean page's text — which
  * scales with the page — drops to 5–7 px on a laptop screen.
