@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import type { AppError, Block, Highlight, Job, LogoutResult, Paper, PaperChat, PaperListResult, Region, RestartTranslationRequest, Snapshot, Translation, Translator } from '../../shared/contracts';
+import { MAX_ANNOTATION_RECTS } from '../../shared/contracts';
 import type { AccountSession } from '../codex/auth-contract';
 import { PaperStore, appError, invalidInput, notFound } from '../store/index';
 import { assertSafeKey, validateAnnotationDetails } from '../store/validate';
@@ -181,7 +182,7 @@ function requireJobIdField(body: Record<string, unknown>, field: string): string
 }
 
 /** Path words kept verbatim in the request log; every other segment is an identifier. */
-const ROUTE_WORDS = new Set(['api', 'papers', 'open', 'upload', 'pdf', 'translation', 'restart', 'highlights', 'chat', 'jobs', 'pause', 'resume', 'retry', 'connection', 'login', 'logout', 'cancel', 'assets', 'index.html']);
+const ROUTE_WORDS = new Set(['api', 'papers', 'open', 'upload', 'pdf', 'translation', 'restart', 'highlights', 'batch', 'chat', 'jobs', 'pause', 'resume', 'retry', 'connection', 'login', 'logout', 'cancel', 'assets', 'index.html']);
 
 function requireInt(body: Record<string, unknown>, field: string, min: number): number {
   const value = body[field];
@@ -192,6 +193,8 @@ function requireInt(body: Record<string, unknown>, field: string, min: number): 
 }
 
 const HIGHLIGHT_COLORS = ['yellow', 'green', 'blue', 'pink'] as const;
+/** A memo belongs to a highlight; a pen stroke never takes a new one. */
+const NO_MEMO_ON_INK = '필기에는 메모를 달 수 없습니다. 메모는 하이라이트에 달아 주세요.';
 type HighlightColor = (typeof HIGHLIGHT_COLORS)[number];
 
 function readHighlightColor(body: Record<string, unknown>, fallback: HighlightColor): HighlightColor {
@@ -232,8 +235,8 @@ function readOptionalNote(body: Record<string, unknown>): string | null | undefi
 
 function requireHighlightRects(body: Record<string, unknown>, page: number): Region[] {
   const value = body.rects;
-  if (!Array.isArray(value) || value.length < 1 || value.length > 200) {
-    throw invalidInput('rects 값은 1~200개의 배열이어야 합니다.');
+  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_ANNOTATION_RECTS) {
+    throw invalidInput(`rects 값은 1~${MAX_ANNOTATION_RECTS}개의 배열이어야 합니다.`);
   }
   return value.map((entry) => {
     if (!entry || typeof entry !== 'object') throw invalidInput('rect는 객체여야 합니다.');
@@ -516,11 +519,15 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
         }
         if (segments.length === 4 && segments[3] === 'highlights' && method === 'GET') {
           if (store.getPaper(paperKey) === null) throw notFound(`저장된 논문이 없습니다: ${paperKey}`);
-          return json(store.listHighlights(paperKey));
+          return json(store.readHighlights(paperKey));
         }
         if (segments.length === 4 && segments[3] === 'highlights' && method === 'POST') {
           const body = await readJsonBody(request);
           return json(createHighlight(paperKey, body), 201);
+        }
+        if (segments.length === 5 && segments[3] === 'highlights' && segments[4] === 'batch' && method === 'POST') {
+          const body = await readJsonBody(request);
+          return json(createHighlights(paperKey, body), 201);
         }
         if (segments.length === 5 && segments[3] === 'highlights' && method === 'PATCH') {
           const highlightId = readHighlightId(segments[4]);
@@ -812,26 +819,51 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
    * stored paper's pageCount, and every rect must share that page.
    */
   function createHighlight(paperKey: string, body: Record<string, unknown>): Highlight {
+    return store.saveHighlight(paperKey, newHighlight(requirePaperForHighlights(paperKey), body));
+  }
+
+  /**
+   * Create the per-page records of one selection that crosses pages, in one commit: every
+   * record is checked first, and one refusal stores none of them.
+   */
+  function createHighlights(paperKey: string, body: Record<string, unknown>): Highlight[] {
+    const paper = requirePaperForHighlights(paperKey);
+    const value = body.annotations;
+    if (!Array.isArray(value) || value.length < 1 || value.length > 20) throw invalidInput('annotations 값은 1~20개의 배열이어야 합니다.');
+    const highlights = value.map((entry) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw invalidInput('annotation은 객체여야 합니다.');
+      return newHighlight(paper, entry as Record<string, unknown>);
+    });
+    return store.addHighlights(paperKey, highlights);
+  }
+
+  function requirePaperForHighlights(paperKey: string): Paper {
     const paper = store.getPaper(paperKey);
     if (paper === null) throw notFound(`저장된 논문이 없습니다: ${paperKey}`);
+    return paper;
+  }
+
+  function newHighlight(paper: Paper, body: Record<string, unknown>): Highlight {
     const page = requireInt(body, 'page', 1);
     if (paper.pageCount === null || page > paper.pageCount) {
       throw invalidInput(`page 값이 논문의 쪽 수를 벗어납니다: ${page}`);
     }
     const now = new Date().toISOString();
-    const highlight: Highlight = {
+    const note = readOptionalNote(body) ?? null;
+    const details = validateAnnotationDetails(body);
+    if (details.kind === 'ink' && note !== null) throw invalidInput(NO_MEMO_ON_INK);
+    return {
       highlightId: randomUUID(),
-      paperKey,
+      paperKey: paper.paperKey,
       page,
       rects: requireHighlightRects(body, page),
       text: requireHighlightText(body),
       color: readHighlightColor(body, 'yellow'),
-      note: readOptionalNote(body) ?? null,
+      note,
       createdAt: now,
       updatedAt: now,
-      ...validateAnnotationDetails(body),
+      ...details,
     };
-    return store.saveHighlight(paperKey, highlight);
   }
 
   /** Update a highlight's note and/or color. Nothing else may change after creation. */
@@ -840,6 +872,8 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     const existing = store.getHighlight(paperKey, highlightId);
     if (existing === null) throw notFound(`하이라이트를 찾을 수 없습니다: ${highlightId}`);
     const note = readOptionalNote(body);
+    // A memo an older version put on a stroke may still be deleted (note: null).
+    if (existing.kind === 'ink' && note !== undefined && note !== null) throw invalidInput(NO_MEMO_ON_INK);
     const updated: Highlight = {
       ...existing,
       note: note === undefined ? existing.note : note,

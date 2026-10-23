@@ -1,5 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type RefObject, type CSSProperties } from 'react';
-import type { AnnotationInput, AnnotationMode, AppError, Block, Connection, Highlight, Job, LoginAttempt, Paper, RestartTranslationRequest, Snapshot } from '../shared/contracts';
+import type { AppError, Block, Connection, Job, LoginAttempt, Paper, RestartTranslationRequest, Snapshot } from '../shared/contracts';
 import { AccountPanel } from './components/AccountPanel';
 import { AnnotationNotebook, AnnotationToolbar } from './components/AnnotationTools';
 import { ModelPreferences } from './components/ModelPreferences';
@@ -7,7 +7,8 @@ import { PanelResizeHandle } from './components/PanelResizeHandle';
 import { ChatBoundary } from './components/ChatBoundary';
 import type { ChatQuote } from './components/ChatPanel';
 import { FindBar } from './components/FindBar';
-import { HighlightPopover } from './components/HighlightLayer';
+import { MemoCardView } from './components/MemoCard';
+import { useAnnotations } from './components/useAnnotations';
 import { KoreanPages, type SelectVia } from './components/KoreanPane';
 import { BackgroundTranslation } from './components/TranslationActivity';
 import { DeleteDialog, LibraryPanel } from './components/LibraryPanel';
@@ -15,7 +16,6 @@ import { RenamePaperDialog } from './components/RenamePaperDialog';
 import { PdfPages } from './components/PdfPane';
 import { ReaderToolbar, type ReplacementRequest } from './components/ReaderToolbar';
 import { ApiClient, extractError, readToken } from './lib/api';
-import type { EraserSize } from './lib/eraser';
 import { keepsKeysToItself } from './lib/find';
 import { blockPage, type Size } from './lib/geometry';
 import { koreanPageFallbackHeight, koreanPageHeight } from './lib/korean-page';
@@ -139,20 +139,8 @@ export function App(): JSX.Element {
   const [modelId, setModelId] = useState<string>('');
   const [error, setError] = useState<AppError | null>(null);
   const [busy, setBusy] = useState(false);
-  const [highlights, setHighlights] = useState<Highlight[]>([]);
-  const [openHighlightId, setOpenHighlightId] = useState<string | null>(null);
-  const [annotationMode, setAnnotationMode] = useState<AnnotationMode>('select');
-  const [annotationColor, setAnnotationColor] = useState<Highlight['color']>('yellow');
-  const [eraserSize, setEraserSize] = useState<EraserSize>('medium');
   const [notebookOpen, setNotebookOpen] = useState(false);
   const [panelWidth, setPanelWidth] = useState(400);
-  const [annotationNotice, setAnnotationNotice] = useState('');
-  const [annotationBusyId, setAnnotationBusyId] = useState<string | null>(null);
-  const [annotationError, setAnnotationError] = useState<string | null>(null);
-  const [erasedInk, setErasedInk] = useState<Highlight[]>([]);
-  const pendingErases = useRef(new Set<string>());
-  const [restoringInk, setRestoringInk] = useState(false);
-  const [annotationDirty, setAnnotationDirty] = useState(false);
 
   // Account: the popover, the app-issued login attempt, and its official address.
   const [accountOpen, setAccountOpen] = useState(false);
@@ -239,6 +227,7 @@ export function App(): JSX.Element {
   const canTranslate = client.canMutate && blockedReason === null && !busy && !resetting;
 
   const fail = useCallback((cause: unknown) => setError(extractError(cause)), []);
+  const annotations = useAnnotations(client, paperKey, paper, fail);
 
   // ------------------------------------------------------------- connection
 
@@ -361,8 +350,6 @@ export function App(): JSX.Element {
     setDoc(null);
     setPageCount(0);
     setCurrentPage(1);
-    setHighlights([]);
-    setOpenHighlightId(null);
     setNarrowPane('source');
     setResetting(false);
     setReplacement(null);
@@ -381,8 +368,6 @@ export function App(): JSX.Element {
     setDoc(null);
     setPageCount(0);
     setCurrentPage(1);
-    setHighlights([]);
-    setOpenHighlightId(null);
     setResetting(false);
     setReplacement(null);
     setChatOpen(false);
@@ -585,6 +570,9 @@ export function App(): JSX.Element {
       // From the confirmation onwards the old Korean pages are hidden; the service's answer
       // decides what comes back — never a locally kept copy of the old translation.
       setSnapshot((current) => (current !== null && current.paper.paperKey === pending.paperKey ? { ...current, translations: [], job: null } : current));
+      // The Korean-side highlights, memos and pen strokes go with them, a memo being written
+      // there and anything about them still on its way included.
+      annotations.dropTranslation(pending.paperKey);
       try {
         await client.restartTranslation(pending.paperKey, {
           modelId: pending.modelId,
@@ -600,11 +588,15 @@ export function App(): JSX.Element {
       } finally {
         if (epoch.current === mine) {
           setResetting(false);
-          if (paperKeyRef.current === pending.paperKey) await refresh(pending.paperKey);
+          if (paperKeyRef.current === pending.paperKey) {
+            await refresh(pending.paperKey);
+            // A new translation takes the Korean-side highlights, memos and pen strokes with it.
+            annotations.reload();
+          }
         }
       }
     },
-    [refresh],
+    [refresh, annotations.reload, annotations.dropTranslation],
   );
 
   // A restart confirmed before a reload is finished with the same request, never a new one.
@@ -635,130 +627,10 @@ export function App(): JSX.Element {
 
   // ------------------------------------------------------------- highlights
 
-  // Load the highlight list once per paper; never mixed with the snapshot poll.
-  useEffect(() => {
-    setHighlights([]);
-    setOpenHighlightId(null);
-    setAnnotationBusyId(null);
-    setAnnotationError(null);
-    if (paperKey === null) {
-      return;
-    }
-    let cancelled = false;
-    void client
-      .listHighlights(paperKey)
-      .then((loaded) => {
-        if (!cancelled) setHighlights(loaded);
-      })
-      .catch(fail);
-    return () => {
-      cancelled = true;
-    };
-  }, [paperKey, paper?.status, paper?.extractionVersion, fail]);
-
-  const createAnnotation = useCallback(
-    (input: AnnotationInput, openNote = false) => {
-      if (paperKey === null) return;
-      const key = paperKey;
-      setAnnotationNotice('저장 중…');
-      void client
-        .createHighlight(key, input)
-        .then((created) => {
-          if (paperKeyRef.current !== key) return;
-          setHighlights((list) => [...list, created]);
-          setAnnotationNotice(input.kind === 'ink' ? '필기를 저장했습니다.' : '하이라이트를 저장했습니다.');
-          if (openNote) setOpenHighlightId((current) => current === null ? created.highlightId : current);
-        })
-        .catch((cause) => { if (paperKeyRef.current === key) { setAnnotationNotice('저장하지 못했습니다.'); fail(cause); } });
-    },
-    [paperKey, fail],
-  );
-
-  const openHighlight = useCallback((highlight: Highlight) => {
-    if (annotationBusyId !== null) return;
-    if (annotationDirty) { setAnnotationNotice('작성 중인 메모를 먼저 저장하거나 닫아주세요.'); return; }
-    setAnnotationError(null);
-    setOpenHighlightId(highlight.highlightId);
-  }, [annotationBusyId, annotationDirty]);
-
-  const saveHighlight = useCallback(
-    (note: string, color: Highlight['color']) => {
-      if (paperKey === null || openHighlightId === null || annotationBusyId !== null) return;
-      const id = openHighlightId;
-      setAnnotationBusyId(id);
-      setAnnotationError(null);
-      void client
-        .updateHighlight(paperKey, openHighlightId, { note: note.length === 0 ? null : note, color })
-        .then((updated) => {
-          if (paperKeyRef.current !== paperKey) return;
-          setHighlights((list) => list.map((h) => (h.highlightId === updated.highlightId ? updated : h)));
-          setOpenHighlightId((current) => current === id ? null : current);
-          setAnnotationNotice('메모를 저장했습니다.');
-        })
-        .catch((cause) => { if (paperKeyRef.current === paperKey) setAnnotationError(extractError(cause).message); })
-        .finally(() => { if (paperKeyRef.current === paperKey) setAnnotationBusyId(null); });
-    },
-    [paperKey, openHighlightId, annotationBusyId],
-  );
-
-  const removeHighlight = useCallback(() => {
-    if (paperKey === null || openHighlightId === null || annotationBusyId !== null) return;
-    const id = openHighlightId;
-    setAnnotationBusyId(id);
-    setAnnotationError(null);
-    void client
-      .deleteHighlight(paperKey, id)
-      .then(() => {
-        if (paperKeyRef.current !== paperKey) return;
-        setHighlights((list) => list.filter((h) => h.highlightId !== id));
-        setOpenHighlightId((current) => current === id ? null : current);
-      })
-      .catch((cause) => { if (paperKeyRef.current === paperKey) setAnnotationError(extractError(cause).message); })
-      .finally(() => { if (paperKeyRef.current === paperKey) setAnnotationBusyId(null); });
-  }, [paperKey, openHighlightId, annotationBusyId]);
-
-  const openHighlightRecord = highlights.find((h) => h.highlightId === openHighlightId) ?? null;
-  const eraseAnnotation = (id: string) => {
-    const selected = highlights.find((highlight) => highlight.highlightId === id && highlight.kind === 'ink');
-    if (paperKey === null || selected === undefined || pendingErases.current.has(id)) return;
-    const key = paperKey;
-    pendingErases.current.add(id);
-    void client.deleteHighlight(key, id).then(() => {
-      if (paperKeyRef.current !== key) return;
-      setHighlights((list) => list.filter((highlight) => highlight.highlightId !== id));
-      setErasedInk((history) => [...history.slice(-19), selected]);
-      setOpenHighlightId((current) => current === id ? null : current);
-      setAnnotationNotice('필기를 지웠습니다.');
-    }).catch(fail).finally(() => pendingErases.current.delete(id));
-  };
-  const restoreErasedInk = () => {
-    const last = erasedInk.at(-1);
-    if (last === undefined || paperKey === null || restoringInk) return;
-    const key = paperKey;
-    const { highlightId, paperKey: _key, createdAt: _created, updatedAt: _updated, ...input } = last;
-    setRestoringInk(true);
-    void client.createHighlight(key, input).then((restored) => {
-      if (paperKeyRef.current !== key) return;
-      setHighlights((list) => [...list, restored]);
-      setErasedInk((history) => history.filter((item) => item.highlightId !== highlightId));
-      setAnnotationNotice('지운 필기를 복원했습니다.');
-    }).catch(fail).finally(() => { if (paperKeyRef.current === key) setRestoringInk(false); });
-  };
+  // The memo list belongs to the paper it was opened on (the records: useAnnotations).
   useEffect(() => {
     setNotebookOpen(false);
-    setAnnotationMode('select');
-    setAnnotationNotice('');
-    setErasedInk([]);
-    setRestoringInk(false);
-    setAnnotationDirty(false);
-    pendingErases.current.clear();
   }, [paperKey]);
-
-  useEffect(() => {
-    if (annotationNotice === '' || annotationNotice === '저장 중…' || annotationNotice === '저장하지 못했습니다.') return;
-    const timer = window.setTimeout(() => setAnnotationNotice(''), 4500);
-    return () => window.clearTimeout(timer);
-  }, [annotationNotice]);
 
   // ------------------------------------------------------- paragraph jumps
 
@@ -1132,7 +1004,7 @@ export function App(): JSX.Element {
       const fitted = zoomToFit !== null && Math.abs(zoomToFit - zoomRef.current) < 0.005;
       if (open) {
         setNotebookOpen(false);
-        setAnnotationMode('select');
+        annotations.setMode('select');
         setChatMounted(true);
         // Beside the docked panel a cramped reader shows one pane (onePaneBesideChat): keep the
         // one being read — where the quote came from, else the one the reader last scrolled.
@@ -1438,11 +1310,8 @@ export function App(): JSX.Element {
           />
 
           <div className="reader-annotations">
-            <AnnotationToolbar mode={annotationMode} onModeChange={setAnnotationMode} color={annotationColor} onColorChange={setAnnotationColor}
-              eraserSize={eraserSize} onEraserSizeChange={setEraserSize}
+            <AnnotationToolbar {...annotations.toolbarProps}
               notebookOpen={notebookOpen} onToggleNotebook={() => { showChat(false); setNotebookOpen((open) => !open); }} />
-            <div className="annotation-feedback"><span className="annotation-save-status" role="status">{annotationNotice || (annotationMode === 'pen' ? '그린 필기는 자동 저장됩니다.' : annotationMode === 'erase' ? '지울 필기 위를 드래그하세요.' : '글자를 선택해 하이라이트·메모·질문')}</span>
-              {erasedInk.length > 0 ? <button type="button" className="annotation-restore" onClick={restoreErasedInk} disabled={restoringInk}>{restoringInk ? '복원 중…' : '지운 필기 복원'}</button> : null}</div>
           </div>
 
           <div className="reader-stage">
@@ -1506,20 +1375,14 @@ export function App(): JSX.Element {
                   currentPage={currentPage}
                   zoom={zoom}
                   blocks={snapshot?.blocks ?? []}
-                  highlights={highlights}
+                  {...annotations.paneProps}
                   pageIntrinsicSize={pageIntrinsicSize}
                   onSize={recordSize}
                   registerPage={registerPage}
                   bodyRef={pdfBody}
                   onScroll={onPdfScroll}
                   onSelectBlock={selectSourceBlock}
-                  onCreateAnnotation={createAnnotation}
-                  annotationMode={annotationMode}
-                  annotationColor={annotationColor}
-                  annotationEraserSize={eraserSize}
                   onAsk={askAboutSource}
-                  onEraseAnnotation={eraseAnnotation}
-                  onOpenHighlight={openHighlight}
                 />
               </section>
 
@@ -1573,14 +1436,8 @@ export function App(): JSX.Element {
                   onScroll={onTextScroll}
                   onAdjustScroll={onKoreanAdjustScroll}
                   onSelectBlock={selectKoreanBlock}
-                  highlights={highlights}
-                  onCreateAnnotation={createAnnotation}
-                  annotationMode={annotationMode}
-                  annotationColor={annotationColor}
-                  annotationEraserSize={eraserSize}
-                  onOpenHighlight={openHighlight}
+                  {...annotations.paneProps}
                   onAsk={askAboutKorean}
-                  onEraseAnnotation={eraseAnnotation}
                 />
               </section>
               <FindBar key={paperKey} doc={doc} pageCount={pageCount} blocks={snapshot?.blocks ?? []} translations={snapshot?.translations ?? []} modelId={snapshot?.job?.modelId ?? null}
@@ -1624,9 +1481,9 @@ export function App(): JSX.Element {
             </aside>
             {notebookOpen ? <>
               <button type="button" className="chat-scrim" aria-label="메모 모음 닫기" tabIndex={-1} onClick={() => setNotebookOpen(false)} />
-              <aside className="chat-dock is-open notebook-dock" role={chatSheet ? 'dialog' : undefined} aria-label="메모 모음 패널" onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); setNotebookOpen(false); } }}>
-                <div className="chat-dock__inner"><AnnotationNotebook highlights={highlights} translations={snapshot?.translations ?? []} blocks={snapshot?.blocks ?? []} modelId={snapshot?.job?.modelId ?? null}
-                  onOpen={openHighlight} onClose={() => setNotebookOpen(false)} onNavigate={(highlight) => {
+              <aside className="chat-dock is-open notebook-dock" role={chatSheet ? 'dialog' : undefined} aria-label="메모 모음 패널" onKeyDown={(event) => { if (event.key === 'Escape' && !event.nativeEvent.isComposing) { event.preventDefault(); event.stopPropagation(); setNotebookOpen(false); } }}>
+                <div className="chat-dock__inner"><AnnotationNotebook highlights={annotations.highlights} translations={snapshot?.translations ?? []} blocks={snapshot?.blocks ?? []} modelId={snapshot?.job?.modelId ?? null}
+                  onOpen={annotations.open} onClose={() => setNotebookOpen(false)} onNavigate={(highlight) => {
                     setNarrowPane(highlight.surface === 'translation' ? 'translation' : 'source');
                     if (chatSheet) setNotebookOpen(false);
                     goToPage(highlight.page);
@@ -1635,11 +1492,8 @@ export function App(): JSX.Element {
             </> : null}
           </div>
 
-          {openHighlightRecord !== null ? <HighlightPopover key={openHighlightRecord.highlightId} highlight={openHighlightRecord}
-            onDirtyChange={setAnnotationDirty}
-            busy={annotationBusyId === openHighlightRecord.highlightId} error={annotationError}
-            onSave={saveHighlight} onDelete={removeHighlight} onClose={() => setOpenHighlightId(null)}
-            onAsk={openHighlightRecord.surface === 'translation' ? askAboutKorean : askAboutSource} /> : null}
+          {annotations.memoCard !== null ? <MemoCardView key={annotations.memoCard.key} {...annotations.memoCard.props}
+            onAsk={annotations.memoCard.props.record?.surface === 'translation' ? askAboutKorean : askAboutSource} /> : null}
 
           {deleteConfirmation !== null ? (
             <DeleteDialog paper={deleteTarget} paperKey={deleteConfirmation} onCancel={() => setDeleteConfirmation(null)} onConfirm={() => void confirmDelete(deleteConfirmation)} />

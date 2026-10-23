@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from 'react';
 import { TextLayer } from 'pdfjs-dist/legacy/build/pdf.mjs';
-import type { AnnotationInput, AnnotationMode, Block, Highlight, Region } from '../../shared/contracts';
+import type { AnnotationInput, AnnotationMode, Block, Highlight } from '../../shared/contracts';
 import type { Size } from '../lib/geometry';
 import { hitTestBlock, pageRenderSize, visiblePageWindow } from '../lib/geometry';
-import { selectionToRegions, sweepSelection, type Point, type SpanBox } from '../lib/highlights';
-import { annotationSurface, measuredPdfSpans } from '../lib/annotations';
+import { sweepPages, type PagePoint, type Point, type SpanBox } from '../lib/highlights';
+import { PEN_WIDTH, annotationSurface, copyPaintedSelection, highlighterInputs, measuredPdfSpans, sourceSelection, type SourceSelection } from '../lib/annotations';
+import type { CardAnchor } from '../lib/annotation-session';
 import { intrinsicSize, type PDFDocumentProxy } from '../lib/pdf';
 import { HighlightLayer } from './HighlightLayer';
-import { SelectionToolbar } from './AnnotationTools';
+import { SelectionMenu } from './AnnotationTools';
 import { InkSurface } from './InkSurface';
 import { EraserSurface } from './EraserSurface';
 import type { EraserSize } from '../lib/eraser';
@@ -27,13 +28,6 @@ export interface PageCanvasProps {
   registerPage(page: number, element: HTMLDivElement | null): void;
   /** Whatever the caller wants absolutely-positioned over the rendered page. */
   children?: ReactNode;
-  /** Forwarded onto the page container; used for drag-driven highlight creation. */
-  onMouseDown?(event: React.MouseEvent<HTMLDivElement>): void;
-  onMouseUp?(event: React.MouseEvent<HTMLDivElement>): void;
-  onPointerDown?(event: React.PointerEvent<HTMLDivElement>): void;
-  onPointerMove?(event: React.PointerEvent<HTMLDivElement>): void;
-  onPointerUp?(event: React.PointerEvent<HTMLDivElement>): void;
-  onDoubleClick?(event: React.MouseEvent<HTMLDivElement>): void;
 }
 
 /**
@@ -46,7 +40,7 @@ export interface PageCanvasProps {
  * Only pages inside the visible window are mounted, so a 40-page paper never
  * rasterises 40 canvases at once.
  */
-export function PageCanvas({ doc, page, zoom, dpr, ariaLabel, size, onSize, registerPage, children, onMouseDown, onMouseUp, onPointerDown, onPointerMove, onPointerUp, onDoubleClick }: PageCanvasProps): JSX.Element {
+export function PageCanvas({ doc, page, zoom, dpr, ariaLabel, size, onSize, registerPage, children }: PageCanvasProps): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [renderedSize, setRenderedSize] = useState<Size | null>(null);
   const box = size ?? renderedSize;
@@ -94,12 +88,6 @@ export function PageCanvas({ doc, page, zoom, dpr, ariaLabel, size, onSize, regi
       data-page={page}
       ref={(element) => registerPage(page, element)}
       style={box === null ? undefined : { width: box.width, height: box.height }}
-      onMouseDown={onMouseDown}
-      onMouseUp={onMouseUp}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onDoubleClick={onDoubleClick}
     >
       <canvas ref={canvasRef} aria-label={ariaLabel ?? `${page}쪽 원문`} />
       {children}
@@ -163,155 +151,35 @@ interface PageViewProps {
   zoom: number;
   dpr: number;
   size: Size;
-  blocks: Block[];
   highlights: Highlight[];
+  /** Records not saved yet and the selection being made, on any page. */
+  drafts: AnnotationInput[];
+  preview: AnnotationInput[];
   onSize(page: number, size: Size): void;
   registerPage(page: number, element: HTMLDivElement | null): void;
-  onSelectBlock(block: Block): void;
-  onCreateHighlight?(page: number, rects: Region[], text: string): void;
   onOpenHighlight(highlight: Highlight): void;
-  annotationMode?: AnnotationMode;
-  annotationColor?: Highlight['color'];
+  annotationMode: AnnotationMode;
+  penColor: Highlight['color'];
+  penWidth: number;
   annotationEraserSize?: EraserSize;
-  onCreateAnnotation?(input: AnnotationInput, openNote?: boolean): void;
-  onAsk?(text: string): void;
-  onEraseAnnotation?(highlightId:string):void;
+  onCreateAnnotations?(inputs: AnnotationInput[]): void;
+  onEraseAnnotation?(highlightId: string): void;
 }
 
+const onPage = (inputs: AnnotationInput[], page: number) => inputs.filter((input) => input.page === page && (input.surface ?? 'original') === 'original');
+
 /**
- * One rendered PDF page: the canvas background, a selectable text layer, the
- * page's saved highlights, and click-to-navigate hit-testing.
- *
- * Navigation no longer uses an overlaid click-target button (spec: it would
- * intercept the mousedown a text selection needs to start). Instead a plain
- * click — one that did not drag — is hit-tested against the page's readable
- * blocks directly, and a drag becomes a highlight of the lines it swept.
+ * One rendered PDF page: the canvas background, a selectable text layer, and the page's
+ * highlights, memo marks and pen strokes, with the pen or the eraser when one is on. Selecting
+ * and highlighting belong to the whole pane (PdfPages): a drag may run on to the next page.
  */
-function PageView({ doc, page, zoom, dpr, size, blocks, highlights, onSize, registerPage, onSelectBlock, onCreateHighlight, onOpenHighlight, annotationMode = 'select', annotationColor = 'yellow', annotationEraserSize, onCreateAnnotation, onAsk, onEraseAnnotation }: PageViewProps): JSX.Element {
+function PageView({ doc, page, zoom, dpr, size, highlights, drafts, preview, onSize, registerPage, onOpenHighlight, annotationMode, penColor, penWidth, annotationEraserSize, onCreateAnnotations, onEraseAnnotation }: PageViewProps): JSX.Element {
   const pageHighlights = useMemo(() => highlights.filter((h) => h.page === page && annotationSurface(h) === 'original'), [highlights, page]);
-  // Page-local pixels: scrolling the pane during a drag must not move its first glyph.
-  const dragStart = useRef<Point | null>(null);
-  const measured = useRef<SpanBox[] | null>(null);
-  const navigateTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [preview, setPreview] = useState<Region[]>([]);
-  const [selection, setSelection] = useState<{ input:AnnotationInput; position:{ left:number; top:number } } | null>(null);
-  const closeSelection = useCallback(() => { setSelection(null); setPreview([]); }, []);
-  const create = useCallback((input:AnnotationInput, openNote?:boolean) => {
-    if (onCreateAnnotation) onCreateAnnotation(input, openNote);
-    else onCreateHighlight?.(input.page, input.rects, input.text);
-  }, [onCreateAnnotation, onCreateHighlight]);
-
-  // A drag released outside this page (over another page, the gutter, the other pane)
-  // never reaches this page's mouseup; the start point must not survive to pair with an
-  // unrelated later release here.
-  useEffect(() => {
-    const clear = () => {
-      if (dragStart.current !== null) setPreview([]);
-      dragStart.current = null;
-      measured.current = null;
-    };
-    window.addEventListener('pointerup', clear);
-    window.addEventListener('pointercancel', clear);
-    return () => { window.removeEventListener('pointerup', clear); window.removeEventListener('pointercancel', clear); if (navigateTimer.current) clearTimeout(navigateTimer.current); };
-  }, []);
-  useEffect(() => { closeSelection(); dragStart.current = null; measured.current = null; }, [zoom, annotationMode, closeSelection]);
-
-  const handlePointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || annotationMode !== 'select' || (event.target as Element).closest('.annotation-selection-toolbar,.saved-ink')) return;
-    if (navigateTimer.current) clearTimeout(navigateTimer.current);
-    setSelection(null); setPreview([]); measured.current = null;
-    const box=event.currentTarget.getBoundingClientRect();
-    dragStart.current = { x: event.clientX-box.left, y: event.clientY-box.top };
-  }, [annotationMode]);
-
-  const handlePointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    const start = dragStart.current;
-    const container = event.currentTarget;
-    const box=container.getBoundingClientRect();
-    const end={x:event.clientX-box.left,y:event.clientY-box.top};
-    if (!start || Math.hypot(end.x - start.x, end.y - start.y) <= 3) return;
-    if (event.pointerType === 'touch') { dragStart.current = null; return; }
-    measured.current ??= measuredPdfSpans(container, true);
-    const swept = sweepSelection(measured.current, start, end);
-    window.getSelection()?.removeAllRanges();
-    setPreview(swept ? selectionToRegions(swept.rects, {left:0,top:0,width:box.width,height:box.height}, page) ?? [] : []);
-  }, [page]);
-
-  const handlePointerUp = useCallback(
-    (event: React.PointerEvent<HTMLDivElement>) => {
-      const container = event.currentTarget;
-      const pageBox = container.getBoundingClientRect();
-      const start = dragStart.current;
-      dragStart.current = null;
-      if (start === null) return; // the button went down on another page: not this page's gesture
-      const end: Point = { x: event.clientX-pageBox.left, y: event.clientY-pageBox.top };
-      const dragged = Math.hypot(end.x - start.x, end.y - start.y) > 3;
-      // A plain click on a saved highlight opens its note (the box's own click handler);
-      // it must not also hit-test the page beneath and jump the other pane. A drag that
-      // happens to end over a box is still a drag.
-      if (!dragged && (event.target as Element).closest('.highlight-box,.saved-ink,.annotation-selection-toolbar') !== null) return;
-
-      if (dragged) {
-        // The highlight follows the swept lines, not the browser's DOM-order selection;
-        // the native selection is only cleared so it does not linger under the new box.
-        const spans = measured.current ?? measuredPdfSpans(container, true);
-        const swept = sweepSelection(spans, start, end);
-        window.getSelection()?.removeAllRanges();
-        if (swept === null) return;
-        // pdf.js emits C0 codes for glyphs it cannot map to Unicode (math symbols); the
-        // stored excerpt is one line of prose, never raw control characters.
-        const text = swept.text.replace(/\p{Cc}+/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 2000);
-        const regions = selectionToRegions(swept.rects, { left: 0, top: 0, width: pageBox.width, height: pageBox.height }, page);
-        if (regions !== null && text.length > 0) {
-          setPreview(regions);
-          setSelection({ input:{ page, rects:regions, text, surface:'original', kind:'highlight' }, position:{ left:event.clientX, top:event.clientY } });
-        }
-        return;
-      }
-
-      // Double/triple-click and keyboard selections are selections, never page jumps.
-      const native=window.getSelection();
-      if(native&&!native.isCollapsed&&native.rangeCount>0) {
-        const range=native.getRangeAt(0);
-        if(container.contains(range.startContainer)&&container.contains(range.endContainer)) {
-          const span=range.startContainer.parentElement?.closest('.textLayer span');
-          if(span?.contains(range.endContainer)) {
-            const rects=selectionToRegions(Array.from(range.getClientRects()),pageBox,page);
-            const text=native.toString().replace(/\p{Cc}/gu,' ').trim().slice(0,2000);
-            if(rects&&text){setPreview(rects);setSelection({input:{page,rects,text,surface:'original'},position:{left:event.clientX,top:event.clientY}});}
-          }
-          return;
-        }
-      }
-
-      // A plain click: hit-test for navigation.
-      const xRatio = (event.clientX - pageBox.left) / pageBox.width;
-      const yRatio = (event.clientY - pageBox.top) / pageBox.height;
-      const block = hitTestBlock(blocks, page, xRatio, yRatio);
-      if (block !== null) navigateTimer.current = setTimeout(() => { navigateTimer.current = null; onSelectBlock(block); }, 300);
-    },
-    [blocks, page, onSelectBlock],
-  );
-
-  const handleDoubleClick = useCallback((event:React.MouseEvent<HTMLDivElement>) => {
-    if (navigateTimer.current) clearTimeout(navigateTimer.current);
-    const selected = window.getSelection();
-    if (!selected?.rangeCount || selected.isCollapsed) return;
-    const range = selected.getRangeAt(0);
-    const span = range.startContainer.parentElement?.closest('.textLayer span');
-    if (!span || !span.contains(range.endContainer)) return;
-    const rects = selectionToRegions(Array.from(range.getClientRects()), event.currentTarget.getBoundingClientRect(), page);
-    const text = selected.toString().replace(/\p{Cc}/gu, ' ').trim().slice(0, 2000);
-    if (rects && text) { setPreview(rects); setSelection({ input:{ page, rects, text, surface:'original' }, position:{ left:event.clientX, top:event.clientY } }); }
-  }, [page]);
-
   return (
-    <PageCanvas doc={doc} page={page} zoom={zoom} dpr={dpr} size={size} onSize={onSize} registerPage={registerPage} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onDoubleClick={handleDoubleClick}>
+    <PageCanvas doc={doc} page={page} zoom={zoom} dpr={dpr} size={size} onSize={onSize} registerPage={registerPage}>
       <TextLayerOverlay doc={doc} page={page} zoom={zoom} />
-      <HighlightLayer highlights={pageHighlights} onOpen={onOpenHighlight} />
-      {preview.length > 0 ? <div className="annotation-selection-preview" aria-hidden="true">{preview.map((r, i) => <i key={i} style={{ left:`${r.x * 100}%`, top:`${r.y * 100}%`, width:`${r.width * 100}%`, height:`${r.height * 100}%` }} />)}</div> : null}
-      {selection ? <SelectionToolbar selection={selection.input} position={selection.position} color={annotationColor} onCreate={create} onAsk={onAsk} onClose={closeSelection} /> : null}
-      {annotationMode === 'pen' ? <InkSurface page={page} surface="original" color={annotationColor} onCreate={create} /> : null}
+      <HighlightLayer highlights={pageHighlights} drafts={onPage(drafts, page)} preview={onPage(preview, page)} pageWidth={size.width} onOpen={onOpenHighlight} />
+      {annotationMode === 'pen' && onCreateAnnotations ? <InkSurface page={page} surface="original" color={penColor} width={penWidth} pageWidth={size.width} onCreate={(input) => onCreateAnnotations([input])} /> : null}
       {annotationMode === 'erase' && onEraseAnnotation ? <EraserSurface page={page} highlights={pageHighlights} onErase={onEraseAnnotation} size={annotationEraserSize} /> : null}
     </PageCanvas>
   );
@@ -332,14 +200,62 @@ export interface PdfPaneProps {
   bodyRef: React.RefObject<HTMLDivElement | null>;
   onScroll(): void;
   onSelectBlock(block: Block): void;
-  onCreateHighlight?(page: number, rects: Region[], text: string): void;
   onOpenHighlight(highlight: Highlight): void;
   annotationMode?: AnnotationMode;
-  annotationColor?: Highlight['color'];
+  highlighterColor?: Highlight['color'];
+  /** The share of each marked line's height the highlighter paints. */
+  highlighterThickness?: number;
+  penColor?: Highlight['color'];
+  /** The pen's thickness as a share of the page width. */
+  penWidth?: number;
   annotationEraserSize?: EraserSize;
-  onCreateAnnotation?(input: AnnotationInput, openNote?: boolean): void;
+  /** Records not saved yet: sweeps waiting for the service, a new memo's selection. */
+  drafts?: AnnotationInput[];
+  /** Save these records at once, one per page. */
+  onCreateAnnotations?(inputs: AnnotationInput[]): void;
+  /** Open a memo card on a selection; `anchor` is the selection's right end. */
+  onStartMemo?(inputs: AnnotationInput[], anchor: CardAnchor): void;
   onAsk?(text: string): void;
-  onEraseAnnotation?(highlightId:string):void;
+  onEraseAnnotation?(highlightId: string): void;
+}
+
+/** A press on the original pages, followed until it is let go. */
+interface Gesture {
+  pointerId: number;
+  /** The press, in viewport pixels and on its page. */
+  from: Point;
+  start: PagePoint;
+  /** The pointer now, in viewport pixels. */
+  at: Point;
+  moved: boolean;
+  /** What the drag selects so far, kept while the pointer strays off the text. */
+  swept: SourceSelection;
+  dispose(): void;
+}
+
+/** The drawn page under a viewport point, or the nearest drawn page above or below it. */
+function pageAt(body: HTMLElement, x: number, y: number): PagePoint | null {
+  let best: PagePoint | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const element of body.querySelectorAll<HTMLElement>(':scope > .pdf-page[data-page]:not(.pdf-placeholder)')) {
+    const box = element.getBoundingClientRect();
+    const distance = y < box.top ? box.top - y : y > box.bottom ? y - box.bottom : 0;
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = { page: Number(element.dataset.page), point: { x: x - box.left, y: y - box.top } };
+    }
+  }
+  return best;
+}
+
+/** The right end of a selection's last line, in viewport pixels: where Edge opens a new memo. */
+function rightEnd(body: HTMLElement, inputs: AnnotationInput[], fallback: CardAnchor): CardAnchor {
+  const last = inputs.at(-1);
+  const rect = last?.rects.at(-1);
+  const element = last === undefined ? null : body.querySelector<HTMLElement>(`:scope > .pdf-page[data-page="${last.page}"]`);
+  if (rect === undefined || element === null) return fallback;
+  const box = element.getBoundingClientRect();
+  return { left: box.left + (rect.x + rect.width) * box.width, top: box.top + rect.y * box.height };
 }
 
 /**
@@ -347,11 +263,210 @@ export interface PdfPaneProps {
  *
  * Pages outside the window are kept as sized placeholders so the scrollbar and
  * every page offset stay correct without rendering the whole document.
+ *
+ * Selecting and highlighting follow the printed lines, not the browser's selection: pdf.js
+ * lays its runs out in content-stream order, so a native selection between two nearby lines
+ * can take in half a page of another column. A drag is swept line by line in reading order,
+ * page by page when it crosses pages (lib/highlights). With the select tool, letting go offers
+ * the selection menu, and while it shows a copy (Ctrl+C) takes the swept text; with the
+ * highlighter, the swept lines are saved at once. A press that does
+ * not move opens the highlight under it, or — with the select tool — jumps the other pane to
+ * the paragraph, after a moment in which a double-click (a word selection) can still cancel it.
  */
 export function PdfPages(props: PdfPaneProps): JSX.Element {
-  const { doc, pageCount, currentPage, zoom, blocks, highlights, pageIntrinsicSize, onSize, registerPage, bodyRef, onScroll, onSelectBlock, onCreateHighlight, onOpenHighlight } = props;
+  const { doc, pageCount, currentPage, zoom, highlights, pageIntrinsicSize, onSize, registerPage, bodyRef, onScroll, onOpenHighlight } = props;
+  const mode = props.annotationMode ?? 'select';
   const dpr = useMemo(() => Math.min(2, typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1), []);
   const live = useMemo(() => new Set(visiblePageWindow(currentPage, pageCount, 1)), [currentPage, pageCount]);
+  const [preview, setPreview] = useState<AnnotationInput[]>([]);
+  const [menu, setMenu] = useState<(SourceSelection & { position: CardAnchor; end: CardAnchor }) | null>(null);
+  const gesture = useRef<Gesture | null>(null);
+  const navigateTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // A drag's window listeners outlive the render that started it; they read the props here.
+  const latest = useRef(props);
+  latest.current = props;
+
+  const closeMenu = useCallback(() => {
+    setMenu(null);
+    setPreview([]);
+  }, []);
+  useEffect(() => {
+    gesture.current?.dispose();
+    closeMenu();
+  }, [zoom, mode, closeMenu]);
+  useEffect(() => () => {
+    gesture.current?.dispose();
+    if (navigateTimer.current !== null) clearTimeout(navigateTimer.current);
+  }, []);
+  // The painted selection is the page's own: a copy while it shows takes its text.
+  useEffect(() => {
+    if (menu === null) return;
+    const copy = (event: ClipboardEvent) => copyPaintedSelection(event, menu.text, window.getSelection());
+    document.addEventListener('copy', copy);
+    return () => document.removeEventListener('copy', copy);
+  }, [menu]);
+
+  const offer = (swept: SourceSelection, body: HTMLElement, released: Point) => {
+    const position = { left: released.x, top: released.y };
+    setPreview(swept.inputs);
+    setMenu({ ...swept, position, end: rightEnd(body, swept.inputs, position) });
+  };
+
+  const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || event.pointerType === 'touch' || (mode !== 'select' && mode !== 'highlight')) return;
+    const body = event.currentTarget;
+    const target = event.target instanceof Element ? event.target : null;
+    if (target === null || target.closest('.memo-icon, .saved-ink') !== null) return;
+    const pressed = target.closest<HTMLElement>('.pdf-page[data-page]');
+    if (pressed === null || pressed.classList.contains('pdf-placeholder')) return;
+    if (navigateTimer.current !== null) {
+      clearTimeout(navigateTimer.current);
+      navigateTimer.current = null;
+    }
+    gesture.current?.dispose();
+    setMenu(null);
+    setPreview([]);
+
+    const highlighting = mode === 'highlight';
+    const box = pressed.getBoundingClientRect();
+    const spans = new Map<number, SpanBox[]>();
+    const sizes = new Map<number, Size>();
+    // A page's runs are measured once per drag, when the drag first reaches it; a page whose
+    // text layer is not drawn yet is measured again on the next move.
+    const spansOf = (page: number): SpanBox[] | undefined => {
+      const known = spans.get(page);
+      if (known !== undefined) return known;
+      const element = body.querySelector<HTMLElement>(`:scope > .pdf-page[data-page="${page}"]:not(.pdf-placeholder)`);
+      if (element === null) return undefined;
+      const measured = measuredPdfSpans(element, true);
+      if (measured.length === 0) return undefined;
+      const drawn = element.getBoundingClientRect();
+      sizes.set(page, { width: drawn.width, height: drawn.height });
+      spans.set(page, measured);
+      return measured;
+    };
+    const sweep = (from: PagePoint, to: PagePoint) => sourceSelection(sweepPages(spansOf, from, to), (page) => sizes.get(page));
+    const state: Gesture = {
+      pointerId: event.pointerId,
+      from: { x: event.clientX, y: event.clientY },
+      start: { page: Number(pressed.dataset.page), point: { x: event.clientX - box.left, y: event.clientY - box.top } },
+      at: { x: event.clientX, y: event.clientY },
+      moved: false,
+      swept: { inputs: [], text: '' },
+      dispose: () => undefined,
+    };
+    // The highlighter's colour and thickness as they are now, the same on every page of the sweep.
+    const painted = (inputs: AnnotationInput[]) => highlighterInputs(inputs, latest.current.highlighterColor ?? 'yellow', latest.current.highlighterThickness);
+    const update = () => {
+      const end = pageAt(body, state.at.x, state.at.y);
+      if (end === null) return;
+      const swept = sweep(state.start, end);
+      if (swept.inputs.length === 0) return;
+      state.swept = swept;
+      setPreview(highlighting ? painted(swept.inputs) : swept.inputs);
+    };
+    // A double-click selects a word natively; it is taken over as a sweep across that word.
+    const takeWord = (released: Point): boolean => {
+      const native = window.getSelection();
+      if (native === null || native.isCollapsed || native.rangeCount === 0) return false;
+      const range = native.getRangeAt(0);
+      const pageOf = (node: Node) => (node instanceof Element ? node : node.parentElement)?.closest<HTMLElement>('.pdf-page[data-page]') ?? null;
+      const element = pageOf(range.startContainer);
+      if (element === null || element !== pageOf(range.endContainer) || !body.contains(element)) return false;
+      const rects = Array.from(range.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0);
+      native.removeAllRanges();
+      if (rects.length === 0) return true;
+      const page = Number(element.dataset.page);
+      const drawn = element.getBoundingClientRect();
+      const first = rects[0];
+      const last = rects[rects.length - 1];
+      const swept = sweep(
+        { page, point: { x: first.left - drawn.left + 0.5, y: first.top + first.height / 2 - drawn.top } },
+        { page, point: { x: last.right - drawn.left - 0.5, y: last.top + last.height / 2 - drawn.top } },
+      );
+      if (swept.inputs.length > 0) offer(swept, body, released);
+      return true;
+    };
+    const click = (released: Point) => {
+      const current = latest.current;
+      const select = (current.annotationMode ?? 'select') === 'select';
+      if (select && takeWord(released)) return;
+      const drawn = pressed.getBoundingClientRect();
+      const page = Number(pressed.dataset.page);
+      const x = (released.x - drawn.left) / drawn.width;
+      const y = (released.y - drawn.top) / drawn.height;
+      // The boxes let the pointer through to the text; a click is matched to them here.
+      const hit = current.highlights
+        .filter((h) => h.page === page && annotationSurface(h) === 'original' && h.kind !== 'ink')
+        .reverse()
+        .find((h) => h.rects.some((rect) => x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height));
+      if (hit !== undefined) {
+        current.onOpenHighlight(hit);
+        return;
+      }
+      if (!select) return;
+      const block = hitTestBlock(current.blocks, page, x, y);
+      if (block !== null) navigateTimer.current = setTimeout(() => {
+        navigateTimer.current = null;
+        latest.current.onSelectBlock(block);
+      }, 300);
+    };
+    const move = (moving: PointerEvent) => {
+      if (moving.pointerId !== state.pointerId) return;
+      state.at = { x: moving.clientX, y: moving.clientY };
+      if (!state.moved) {
+        if (Math.hypot(state.at.x - state.from.x, state.at.y - state.from.y) <= 3) return;
+        state.moved = true;
+        body.dataset.sweeping = '';
+      }
+      // The browser's own selection would follow the content-stream order: it never shows.
+      const native = window.getSelection();
+      if (native !== null && !native.isCollapsed) native.removeAllRanges();
+      update();
+    };
+    const scrolled = () => { if (state.moved) update(); };
+    const up = (released: PointerEvent) => {
+      if (released.pointerId !== state.pointerId) return;
+      state.at = { x: released.clientX, y: released.clientY };
+      state.dispose();
+      if (!state.moved) {
+        click(state.at);
+        return;
+      }
+      update();
+      window.getSelection()?.removeAllRanges();
+      if (state.swept.inputs.length === 0) {
+        setPreview([]);
+        return;
+      }
+      if (highlighting) {
+        setPreview([]);
+        latest.current.onCreateAnnotations?.(painted(state.swept.inputs));
+        return;
+      }
+      offer(state.swept, body, state.at);
+    };
+    const cancel = (cancelled: PointerEvent) => {
+      if (cancelled.pointerId !== state.pointerId) return;
+      state.dispose();
+      setPreview([]);
+    };
+    state.dispose = () => {
+      delete body.dataset.sweeping;
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', cancel);
+      body.removeEventListener('scroll', scrolled);
+      if (gesture.current === state) gesture.current = null;
+    };
+    // The highlighter never makes a native selection; the select tool's double-click does.
+    if (highlighting) body.dataset.sweeping = '';
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', cancel);
+    body.addEventListener('scroll', scrolled);
+    gesture.current = state;
+  };
 
   if (doc === null) {
     return (
@@ -362,43 +477,54 @@ export function PdfPages(props: PdfPaneProps): JSX.Element {
   }
 
   return (
-    <div className="pane-body" ref={bodyRef} onScroll={onScroll} data-testid="pdf-body">
-      {Array.from({ length: pageCount }, (_, index) => index + 1).map((page) =>
-        live.has(page) ? (
-          <PageView
-            key={page}
-            doc={doc}
-            page={page}
-            zoom={zoom}
-            dpr={dpr}
-            size={pageRenderSize(pageIntrinsicSize(page), zoom)}
-            blocks={blocks}
-            highlights={highlights}
-            onSize={onSize}
-            registerPage={registerPage}
-            onSelectBlock={onSelectBlock}
-            onCreateHighlight={onCreateHighlight}
-            onOpenHighlight={onOpenHighlight}
-            annotationMode={props.annotationMode}
-            annotationColor={props.annotationColor}
-            annotationEraserSize={props.annotationEraserSize}
-            onCreateAnnotation={props.onCreateAnnotation}
-            onAsk={props.onAsk}
-            onEraseAnnotation={props.onEraseAnnotation}
-          />
-        ) : (
-          <div
-            key={page}
-            className="pdf-page pdf-placeholder"
-            data-page={page}
-            ref={(element) => registerPage(page, element)}
-            style={pageRenderSize(pageIntrinsicSize(page), zoom)}
-          >
-            {page}쪽
-          </div>
-        ),
-      )}
-    </div>
+    <>
+      <div className="pane-body" ref={bodyRef} onScroll={onScroll} onPointerDown={handlePointerDown} data-testid="pdf-body">
+        {Array.from({ length: pageCount }, (_, index) => index + 1).map((page) =>
+          live.has(page) ? (
+            <PageView
+              key={page}
+              doc={doc}
+              page={page}
+              zoom={zoom}
+              dpr={dpr}
+              size={pageRenderSize(pageIntrinsicSize(page), zoom)}
+              highlights={highlights}
+              drafts={props.drafts ?? []}
+              preview={preview}
+              onSize={onSize}
+              registerPage={registerPage}
+              onOpenHighlight={onOpenHighlight}
+              annotationMode={mode}
+              penColor={props.penColor ?? 'blue'}
+              penWidth={props.penWidth ?? PEN_WIDTH.initial}
+              annotationEraserSize={props.annotationEraserSize}
+              onCreateAnnotations={props.onCreateAnnotations}
+              onEraseAnnotation={props.onEraseAnnotation}
+            />
+          ) : (
+            <div
+              key={page}
+              className="pdf-page pdf-placeholder"
+              data-page={page}
+              ref={(element) => registerPage(page, element)}
+              style={pageRenderSize(pageIntrinsicSize(page), zoom)}
+            >
+              {page}쪽
+            </div>
+          ),
+        )}
+      </div>
+      {menu !== null ? (
+        <SelectionMenu
+          text={menu.text}
+          position={menu.position}
+          onHighlight={(color) => { props.onCreateAnnotations?.(highlighterInputs(menu.inputs, color)); closeMenu(); }}
+          onMemo={() => { props.onStartMemo?.(menu.inputs, menu.end); closeMenu(); }}
+          onAsk={props.onAsk === undefined ? undefined : () => { props.onAsk?.(menu.text); closeMenu(); }}
+          onClose={closeMenu}
+        />
+      ) : null}
+    </>
   );
 }
 

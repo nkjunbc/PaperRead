@@ -28,7 +28,7 @@ export interface RestartTranslationResult { job: Job }
 export interface PaperListResult { papers: Paper[] }
 export interface Snapshot { paper:Paper; blocks:Block[]; translations:Translation[]; job:Job|null }
 export type AnnotationSurface = 'original'|'translation';
-export type AnnotationMode = 'select'|'pen'|'erase';
+export type AnnotationMode = 'select'|'highlight'|'pen'|'erase';
 /** UTF-16 offsets and the exact selected text in one translated paragraph. */
 export interface TextAnchor { blockId:string; start:number; end:number; quote:string; /** Version 2 includes selectable source math in offsets. Absent: legacy image-only math. */ textVersion?:2 }
 export interface InkPoint { x:number; y:number }
@@ -36,7 +36,13 @@ export interface InkStroke { points:InkPoint[]; width:number }
 export interface AnnotationInput {
   page:number; rects:Region[]; text:string; color?:'yellow'|'green'|'blue'|'pink'; note?:string|null;
   surface?:AnnotationSurface; kind?:'highlight'|'ink'; anchors?:TextAnchor[]; strokes?:InkStroke[]; layoutSignature?:string;
+  /** The share of each marked line's height the highlighter paints, measured up from the line's
+   * bottom edge: above 0, at most 1. Absent: the whole line. Text highlights only. */
+  thickness?:number;
 }
+/** The most rects one record holds: a highlight or memo marks at most this many lines of its
+ * page. A selection that marks more is refused before it is saved, never cut short. */
+export const MAX_ANNOTATION_RECTS = 200;
 /** Missing surface/kind identifies a legacy original-PDF highlight. */
 export interface Highlight extends AnnotationInput { highlightId:string; paperKey:string; color:'yellow'|'green'|'blue'|'pink'; note:string|null; createdAt:string; updatedAt:string }
 export type ApiResult<T> = {data:T}|{error:AppError};

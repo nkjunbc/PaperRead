@@ -16,6 +16,7 @@ import type {
   Translation,
   Usage,
 } from '../../shared/contracts';
+import { MAX_ANNOTATION_RECTS } from '../../shared/contracts';
 import { invalidInput } from './errors';
 
 const PAPER_STATUSES = ['fetching', 'extracting', 'ready', 'partial', 'unsupported', 'failed'] as const;
@@ -307,8 +308,8 @@ export function validateHighlight(highlight: unknown, paperKey: string): Highlig
   if (!isNonEmptyString(h.highlightId)) throw invalidInput('highlight.highlightId must be a non-empty string');
   if (h.paperKey !== paperKey) throw invalidInput(`highlight ${h.highlightId}: paperKey mismatch (expected ${paperKey})`);
   if (!isInt(h.page) || h.page < 1) throw invalidInput(`highlight ${h.highlightId}: page must be a 1-based integer`);
-  if (!Array.isArray(h.rects) || h.rects.length < 1 || h.rects.length > 200) {
-    throw invalidInput(`highlight ${h.highlightId}: rects must contain between 1 and 200 entries`);
+  if (!Array.isArray(h.rects) || h.rects.length < 1 || h.rects.length > MAX_ANNOTATION_RECTS) {
+    throw invalidInput(`highlight ${h.highlightId}: rects must contain between 1 and ${MAX_ANNOTATION_RECTS} entries`);
   }
   if (typeof h.text !== 'string' || h.text.length === 0) throw invalidInput(`highlight ${h.highlightId}: text must be a non-empty string`);
   if (h.text.length > 2000) throw invalidInput(`highlight ${h.highlightId}: text is too long`);
@@ -336,9 +337,16 @@ export function validateHighlight(highlight: unknown, paperKey: string): Highlig
   };
 }
 
+/** The most text one record may mark on a Korean page, in one anchor and in all of them. A longer
+ * selection is refused whole: a record never marks less than the reader selected. */
+const MAX_ANCHORED_CHARS = 20_000;
+const ANCHORS_TOO_LONG = '한 쪽에서 한 번에 표시할 수 있는 글은 20,000자까지입니다. 나눠서 선택해 주세요.';
+const THICKNESS_INVALID = '형광펜 두께는 0보다 크고 1 이하인 수여야 합니다.';
+const THICKNESS_ON_INK = '형광펜 두께는 하이라이트에만 쓸 수 있습니다.';
+
 /** Optional annotation fields remain absent for older records. Never coerce unknown shapes. */
-export function validateAnnotationDetails(value: Record<string, unknown> | AnnotationInput): Pick<AnnotationInput, 'surface'|'kind'|'anchors'|'strokes'|'layoutSignature'> {
-  const details: Pick<AnnotationInput, 'surface'|'kind'|'anchors'|'strokes'|'layoutSignature'> = {};
+export function validateAnnotationDetails(value: Record<string, unknown> | AnnotationInput): Pick<AnnotationInput, 'surface'|'kind'|'anchors'|'strokes'|'layoutSignature'|'thickness'> {
+  const details: Pick<AnnotationInput, 'surface'|'kind'|'anchors'|'strokes'|'layoutSignature'|'thickness'> = {};
   if (value.surface !== undefined) {
     if (value.surface !== 'original' && value.surface !== 'translation') throw invalidInput('surface must be original or translation');
     details.surface = value.surface;
@@ -354,11 +362,12 @@ export function validateAnnotationDetails(value: Record<string, unknown> | Annot
       const a = anchor as Record<string, unknown>;
       if (!isNonEmptyString(a.blockId) || (a.blockId as string).length > 300 || hasControlChars(a.blockId as string, false)) throw invalidInput('anchor.blockId is invalid');
       if (typeof a.start !== 'number' || !Number.isSafeInteger(a.start) || a.start < 0 || typeof a.end !== 'number' || !Number.isSafeInteger(a.end) || a.end <= a.start || a.end > 1_000_000) throw invalidInput('anchor offsets are invalid');
-      if (typeof a.quote !== 'string' || a.quote.length < 1 || a.quote.length > 2000 || a.end - a.start !== a.quote.length || hasControlChars(a.quote, true)) throw invalidInput('anchor quote is invalid');
+      if (typeof a.quote === 'string' && a.quote.length > MAX_ANCHORED_CHARS) throw invalidInput(ANCHORS_TOO_LONG);
+      if (typeof a.quote !== 'string' || a.quote.length < 1 || a.end - a.start !== a.quote.length || hasControlChars(a.quote, true)) throw invalidInput('anchor quote is invalid');
       if(a.textVersion!==undefined&&a.textVersion!==2)throw invalidInput('anchor text version is invalid');
       return { blockId: a.blockId as string, start: a.start, end: a.end, quote: a.quote, ...(a.textVersion===2?{textVersion:2 as const}:{}) };
     });
-    if (details.anchors.reduce((sum, a) => sum + a.quote.length, 0) > 2000) throw invalidInput('anchor quotes are too long');
+    if (details.anchors.reduce((sum, a) => sum + a.quote.length, 0) > MAX_ANCHORED_CHARS) throw invalidInput(ANCHORS_TOO_LONG);
   }
   if (value.strokes !== undefined) {
     if (!Array.isArray(value.strokes) || value.strokes.length < 1 || value.strokes.length > 20) throw invalidInput('strokes must contain 1 to 20 entries');
@@ -383,8 +392,13 @@ export function validateAnnotationDetails(value: Record<string, unknown> | Annot
     if (typeof value.layoutSignature !== 'string' || !/^[a-f0-9]{8,64}$/.test(value.layoutSignature)) throw invalidInput('layoutSignature is invalid');
     details.layoutSignature = value.layoutSignature;
   }
+  if (value.thickness !== undefined) {
+    if (typeof value.thickness !== 'number' || !Number.isFinite(value.thickness) || value.thickness <= 0 || value.thickness > 1) throw invalidInput(THICKNESS_INVALID);
+    details.thickness = value.thickness;
+  }
   if (details.kind === 'ink') {
     if (!details.strokes || details.anchors) throw invalidInput('ink needs strokes and cannot have text anchors');
+    if (details.thickness !== undefined) throw invalidInput(THICKNESS_ON_INK);
     if (details.surface === 'translation' && !details.layoutSignature) throw invalidInput('translated ink needs a layout signature');
   } else {
     if (details.strokes) throw invalidInput('text highlights cannot contain ink');

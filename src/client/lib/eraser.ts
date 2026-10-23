@@ -18,13 +18,17 @@ function crossed(a:Point,b:Point,c:Point,d:Point):boolean {
   const o1=orient(a,b,c), o2=orient(a,b,d), o3=orient(c,d,a), o4=orient(c,d,b);
   return o1*o2 < 0 && o3*o4 < 0;
 }
+/** Only pen strokes are erased; highlights and memos are deleted from their own menu, and so is
+ * a stroke that carries a memo (an older version allowed one). A stroke is touched when the
+ * eraser reaches its painted edge: its width is a share of the page width. */
 export function inkIntersectsEraser(highlight:Highlight, from:Point, to:Point, size:Size, radius:number):boolean {
-  if (highlight.kind !== 'ink') return false;
+  if (highlight.kind !== 'ink' || (highlight.note ?? null) !== null) return false;
   return (highlight.strokes ?? []).some((stroke) => {
+    const reach = radius + 1.2 + stroke.width*size.width/2;
     for (let i=1;i<stroke.points.length;i++) {
       const a={x:stroke.points[i-1].x*size.width,y:stroke.points[i-1].y*size.height};
       const b={x:stroke.points[i].x*size.width,y:stroke.points[i].y*size.height};
-      if (crossed(from,to,a,b) || Math.min(pointToSegment(a,from,to),pointToSegment(b,from,to),pointToSegment(from,a,b),pointToSegment(to,a,b)) <= radius + 1.2) return true;
+      if (crossed(from,to,a,b) || Math.min(pointToSegment(a,from,to),pointToSegment(b,from,to),pointToSegment(from,a,b),pointToSegment(to,a,b)) <= reach) return true;
     }
     return false;
   });

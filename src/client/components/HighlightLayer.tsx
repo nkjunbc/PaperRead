@@ -1,26 +1,40 @@
-import { useEffect, useRef, useState, type JSX } from 'react';
-import type { Highlight, InkPoint } from '../../shared/contracts';
-import { IconChat } from './ChatIcons';
-
-const COLOR_VALUES: Record<Highlight['color'], string> = {
-  yellow: 'rgba(255, 213, 79, 0.45)',
-  green: 'rgba(129, 199, 132, 0.45)',
-  blue: 'rgba(100, 181, 246, 0.45)',
-  pink: 'rgba(240, 152, 190, 0.45)',
-};
+import type { JSX } from 'react';
+import type { AnnotationInput, Highlight, InkPoint, Region } from '../../shared/contracts';
 
 export const HIGHLIGHT_COLORS: readonly Highlight['color'][] = ['yellow', 'green', 'blue', 'pink'];
-export const INK_COLORS: Record<Highlight['color'], string> = { yellow:'#ac8120', green:'#42765c', blue:'#3f698c', pink:'#9d526f' };
+/** Edge's highlighter colours. Painted multiplied over the page, so the text stays black. */
+export const HIGHLIGHT_FILLS: Record<Highlight['color'], string> = { yellow: '#fff066', green: '#7df066', blue: '#8fdef9', pink: '#f799d1' };
+/** Edge's names for its highlighter colours. */
+export const HIGHLIGHT_LABELS: Record<Highlight['color'], string> = { yellow: '노랑', green: '녹색', blue: '연한 파랑', pink: '분홍' };
+/** Pen colours, from Edge's ink palette: strong enough to read as writing on a white page. */
+export const INK_COLORS: Record<Highlight['color'], string> = { yellow: '#ffaa00', green: '#008055', blue: '#004de6', pink: '#b31564' };
+export const INK_LABELS: Record<Highlight['color'], string> = { yellow: '노랑', green: '초록', blue: '파랑', pink: '분홍' };
 export function inkPath(points: InkPoint[]): string { return points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x * 1000},${p.y * 1000}`).join(' '); }
+/** A pen stroke's drawn width in pixels: its stored width is a share of the page width. */
+export function inkPixels(width: number, pageWidth: number): number { return Math.round(width * pageWidth * 100) / 100; }
+
+const placed = (rect: Region) => ({ left: `${rect.x * 100}%`, top: `${rect.y * 100}%`, width: `${rect.width * 100}%`, height: `${rect.height * 100}%` });
+
+/** How the highlighter paints each line of a mark: over the whole line, or, set thinner, only in
+ * the band along the line's bottom edge, `thickness` of its height. The line's own box stays
+ * whole either way: a click, the memo card and the memo mark go by it. A mark with no colour is
+ * a selection, painted by its class. */
+function paint({ color, thickness }: Pick<AnnotationInput, 'color' | 'thickness'>): { fill: string | undefined; band: JSX.Element | null } {
+  if (color === undefined) return { fill: undefined, band: null };
+  if (thickness === undefined || thickness >= 1) return { fill: HIGHLIGHT_FILLS[color], band: null };
+  return { fill: 'transparent', band: <span className="highlight-band" style={{ top: `${Math.round((1 - thickness) * 10000) / 100}%`, backgroundColor: HIGHLIGHT_FILLS[color] }} /> };
+}
 
 interface HighlightBoxProps {
   highlight: Highlight;
   onOpen(highlight: Highlight): void;
 }
 
-/** One saved highlight, painted as a ratio-positioned colored rectangle per rect. */
+/** One saved highlight, a box per line. The boxes let the pointer through to the text beneath
+ * (a drag that starts on a highlight still selects); a click is matched to them by the pane,
+ * and the keyboard reaches the record through its first box. */
 function HighlightBox({ highlight, onOpen }: HighlightBoxProps): JSX.Element {
-  const pressed = useRef<{x:number;y:number}|null>(null);
+  const { fill, band } = paint(highlight);
   return (
     <>
       {highlight.rects.map((rect, index) => (
@@ -28,153 +42,84 @@ function HighlightBox({ highlight, onOpen }: HighlightBoxProps): JSX.Element {
           key={`${highlight.highlightId}-${index}`}
           type="button"
           className="highlight-box"
-          style={{
-            left: `${rect.x * 100}%`,
-            top: `${rect.y * 100}%`,
-            width: `${rect.width * 100}%`,
-            height: `${rect.height * 100}%`,
-            backgroundColor: COLOR_VALUES[highlight.color],
-          }}
+          data-highlight-id={highlight.highlightId}
+          tabIndex={index === 0 ? 0 : -1}
+          aria-hidden={index === 0 ? undefined : true}
+          style={{ ...placed(rect), backgroundColor: fill }}
           aria-label={`하이라이트: ${highlight.text.slice(0, 40)}`}
-          onPointerDown={(event) => { pressed.current={x:event.clientX,y:event.clientY}; }}
-          onClick={(event) => {
-            event.stopPropagation();
-            const start=pressed.current;pressed.current=null;
-            if(event.detail>0&&start&&Math.hypot(event.clientX-start.x,event.clientY-start.y)>3)return;
-            onOpen(highlight);
-          }}
-        >
-          {index === 0 && highlight.note !== null ? <span className="highlight-note-dot" aria-hidden="true" /> : null}
-        </button>
+          onClick={() => onOpen(highlight)}
+        >{band}</button>
       ))}
     </>
   );
 }
 
-export interface HighlightPopoverProps {
-  highlight: Highlight;
-  onSave(note: string, color: Highlight['color']): void;
-  onDelete(): void;
-  onClose(): void;
-  /** Quote the highlighted passage into a question about the paper. */
-  onAsk?(text: string): void;
-  busy?: boolean;
-  error?: string|null;
-  onDirtyChange?(dirty:boolean):void;
-}
-
-/** The small editor that opens when a highlight is clicked: excerpt, note, color, save/delete/close. */
-export function HighlightPopover({ highlight, onSave, onDelete, onClose, onAsk, busy = false, error, onDirtyChange }: HighlightPopoverProps): JSX.Element {
-  const [note, setNote] = useState(highlight.note ?? '');
-  const [color, setColor] = useState<Highlight['color']>(highlight.color);
-  // An unsaved note keeps the editor open; otherwise asking moves the reader on to the question.
-  const edited = note !== (highlight.note ?? '') || color !== highlight.color;
-  useEffect(() => { onDirtyChange?.(edited); }, [edited,onDirtyChange]);
-  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
-  const [confirmDiscard, setConfirmDiscard] = useState(false);
-  const root = useRef<HTMLDivElement>(null);
-  const previousFocus = useRef(typeof document === 'undefined' ? null : document.activeElement);
-  useEffect(() => {
-    const editor = root.current;
-    return () => {
-      const prior = previousFocus.current;
-      if (prior instanceof HTMLElement && prior.isConnected && (document.activeElement === document.body || (document.activeElement && editor?.contains(document.activeElement)))) prior.focus({ preventScroll:true });
-    };
-  }, []);
-  const close = () => { if (busy) return; if (edited) setConfirmDiscard(true); else onClose(); };
-
+/** Edge's memo mark: a speech bubble at the top-left of the marked text. */
+function MemoIcon({ highlight, onOpen }: HighlightBoxProps): JSX.Element {
+  const rect = highlight.rects[0];
+  const note = highlight.note ?? '';
   return (
-    <div
-      className="highlight-popover"
-      ref={root}
-      role="dialog"
-      aria-label="하이라이트 메모"
-      aria-busy={busy}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape') {
-          event.stopPropagation();
-          close();
-        }
-        if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
-          event.preventDefault(); if (!busy) onSave(note.trim().length === 0 ? '' : note, color);
-        }
-      }}
-    >
-      <div className="highlight-editor-head"><strong>{highlight.page}쪽 · {highlight.surface === 'translation' ? '번역' : '원문'} {highlight.kind === 'ink' ? '필기' : '메모'}</strong><button type="button" aria-label="메모 닫기" onClick={close}>×</button></div>
-      {highlight.kind !== 'ink' ? <p className="highlight-excerpt">{highlight.text.slice(0, 200)}</p> : null}
-      {onAsk !== undefined && highlight.kind !== 'ink' ? (
-        <button
-          type="button"
-          className="highlight-popover-ask"
-          disabled={busy}
-          onClick={() => {
-            onAsk(highlight.text);
-            if (!edited) onClose();
-          }}
-        >
-          <IconChat size={14} />
-          이 부분 질문하기
-        </button>
-      ) : null}
-      <textarea
-        aria-label="메모"
-        value={note}
-        onChange={(event) => setNote(event.target.value)}
-        rows={3}
-        maxLength={5000}
-        placeholder="이 부분에 대한 생각을 남기세요"
-        autoFocus
-        disabled={busy}
-      />
-      <div className="highlight-colors">
-        {HIGHLIGHT_COLORS.map((c) => (
-          <button
-            key={c}
-            type="button"
-            className={`highlight-color-swatch${c === color ? ' selected' : ''}`}
-            style={{ backgroundColor: COLOR_VALUES[c] }}
-            aria-label={`색 ${c}`}
-            aria-pressed={c === color}
-            disabled={busy}
-            onClick={() => setColor(c)}
-          />
-        ))}
-      </div>
-      {busy ? <p role="status">저장 중…</p> : null}
-      {error ? <p role="alert">{error}</p> : null}
-      {edited ? <p className="highlight-dirty">저장하지 않은 변경 · Ctrl/⌘ + Enter로 저장</p> : null}
-      {confirmDiscard ? <div className="highlight-discard" role="alert">작성 중인 메모를 저장할까요?<div><button type="button" disabled={busy} onClick={() => onSave(note.trim().length === 0 ? '' : note, color)}>저장</button><button type="button" disabled={busy} onClick={() => setConfirmDiscard(false)}>계속 작성</button><button type="button" disabled={busy} onClick={onClose}>변경 버리기</button></div></div> : null}
-      <div className="highlight-popover-actions">
-        <button type="button" disabled={busy} onClick={() => onSave(note.trim().length === 0 ? '' : note, color)}>
-          저장
-        </button>
-        <button type="button" disabled={busy} onClick={onDelete}>
-          삭제
-        </button>
-        <button type="button" disabled={busy} onClick={close}>
-          닫기
-        </button>
-      </div>
-    </div>
+    <button type="button" className="memo-icon" data-highlight-id={highlight.highlightId} style={{ left: `${rect.x * 100}%`, top: `${rect.y * 100}%` }} aria-label={`메모 열기: ${note.slice(0, 40)}`} title={note.slice(0, 200)} onClick={(event) => { event.stopPropagation(); onOpen(highlight); }}>
+      <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true"><path d="M1.5 1.5h11v8h-7l-3.5 3v-3h-0.5z" fill="#fff066" stroke="#7f7833" strokeLinejoin="round" /></svg>
+    </button>
   );
 }
 
 export interface HighlightLayerProps {
+  /** This page's saved records, where they are drawn now. */
   highlights: Highlight[];
+  /** This page's records not saved yet: sweeps waiting for the service, a new memo's selection. */
+  drafts?: AnnotationInput[];
+  /** The selection being made on this page, in the highlighter's colour while it paints. */
+  preview?: AnnotationInput[];
+  /** The page's drawn width in pixels: a pen stroke's width is a share of it. */
+  pageWidth: number;
   onOpen(highlight: Highlight): void;
 }
 
-/** All saved highlights for one page, absolutely positioned over the page box. */
-export function HighlightLayer({ highlights, onOpen }: HighlightLayerProps): JSX.Element {
+/** All highlights, memo marks and pen strokes of one page, positioned over the page box. */
+export function HighlightLayer({ highlights, drafts = [], preview = [], pageWidth, onOpen }: HighlightLayerProps): JSX.Element {
+  const ink = (highlight: Highlight | AnnotationInput, key: string, saved: Highlight | null) => (highlight.strokes ?? []).map((stroke, i) => (
+    <path
+      key={`${key}-${i}`}
+      className={saved ? 'saved-ink' : undefined}
+      data-highlight-id={saved?.highlightId}
+      role={saved ? 'button' : undefined}
+      tabIndex={saved ? 0 : undefined}
+      aria-label={saved ? `${highlight.page}쪽 필기 열기` : undefined}
+      d={inkPath(stroke.points)}
+      stroke={INK_COLORS[highlight.color ?? 'blue']}
+      strokeWidth={inkPixels(stroke.width, pageWidth)}
+      vectorEffect="non-scaling-stroke"
+      onClick={saved ? (e) => { e.stopPropagation(); onOpen(saved); } : undefined}
+      onKeyDown={saved ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(saved); } } : undefined}
+    />
+  ));
   return (
-    <><div className="highlight-layer">
-      {highlights.filter((highlight) => highlight.kind !== 'ink').map((highlight) => (
-        <HighlightBox key={highlight.highlightId} highlight={highlight} onOpen={onOpen} />
-      ))}
-    </div>
-    <svg className="annotation-ink-layer" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-label="저장된 필기">
-      {highlights.filter((highlight) => highlight.kind === 'ink').flatMap((highlight) => (highlight.strokes ?? []).map((stroke, i) => <path key={`${highlight.highlightId}-${i}`} className="saved-ink" role="button" tabIndex={0} aria-label={`${highlight.page}쪽 필기 메모 열기`} d={inkPath(stroke.points)} stroke={INK_COLORS[highlight.color]} strokeWidth="2.25" vectorEffect="non-scaling-stroke" onClick={(e) => { e.stopPropagation(); onOpen(highlight); }} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(highlight); } }} />))}
-    </svg></>
+    <>
+      <div className="highlight-layer">
+        {drafts.filter((draft) => draft.kind !== 'ink').flatMap((draft, d) => {
+          const { fill, band } = paint(draft);
+          return draft.rects.map((rect, i) => (
+            <span key={`draft-${d}-${i}`} className={`highlight-box highlight-draft${draft.color ? '' : ' is-selection'}`} aria-hidden="true" style={{ ...placed(rect), backgroundColor: fill }}>{band}</span>
+          ));
+        })}
+        {highlights.filter((highlight) => highlight.kind !== 'ink').map((highlight) => (
+          <HighlightBox key={highlight.highlightId} highlight={highlight} onOpen={onOpen} />
+        ))}
+        {preview.flatMap((selection, s) => {
+          const { fill, band } = paint(selection);
+          return selection.rects.map((rect, i) => (
+            <span key={`preview-${s}-${i}`} className={`highlight-box highlight-preview${selection.color ? '' : ' is-selection'}`} aria-hidden="true" style={{ ...placed(rect), backgroundColor: fill }}>{band}</span>
+          ));
+        })}
+      </div>
+      <svg className="annotation-ink-layer" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-label="저장된 필기">
+        {drafts.filter((draft) => draft.kind === 'ink').flatMap((draft, d) => ink(draft, `draft-${d}`, null))}
+        {highlights.filter((highlight) => highlight.kind === 'ink').flatMap((highlight) => ink(highlight, highlight.highlightId, highlight))}
+      </svg>
+      {highlights.filter((highlight) => highlight.note !== null).map((highlight) => <MemoIcon key={`memo-${highlight.highlightId}`} highlight={highlight} onOpen={onOpen} />)}
+    </>
   );
 }
 

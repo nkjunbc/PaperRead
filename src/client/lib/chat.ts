@@ -83,9 +83,8 @@ export function withSuggestion(draft: string, suggestion: string): string {
 
 // ------------------------------------------------------------------ quotes
 
-/** A selection as one tidy passage: no stray spaces, at most one blank line in a row. */
-export function normalizeSelection(text: string): string {
-  const tidy = text
+function tidySelection(text: string): string {
+  return text
     .replace(/\r\n?/g, '\n')
     .replace(/[ \t ]+/g, ' ')
     .split('\n')
@@ -93,7 +92,18 @@ export function normalizeSelection(text: string): string {
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+/** A selection as one tidy passage: no stray spaces, at most one blank line in a row. */
+export function normalizeSelection(text: string): string {
+  const tidy = tidySelection(text);
   return tidy.length > QUOTE_LIMIT ? `${tidy.slice(0, QUOTE_LIMIT).trimEnd()}…` : tidy;
+}
+
+/** What the composer says after quoting `text`: that only its start went in, when it was too
+ * long to quote whole. */
+export function quoteNotice(text: string): string | null {
+  return tidySelection(text).length > QUOTE_LIMIT ? `인용한 글이 길어 앞부분 ${groupDigits(QUOTE_LIMIT)}자만 넣었습니다.` : null;
 }
 
 /**

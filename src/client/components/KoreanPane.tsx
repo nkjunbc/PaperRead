@@ -22,7 +22,12 @@ import { scrollShiftForResize, scrollTopForDescendant } from '../lib/sync';
 import { TranslatedAnnotations } from './TranslatedAnnotations';
 import { TranslatedInline, useOtherPageImage } from './TranslatedInline';
 import { SelectableSourceMath } from './SelectableSourceMath';
+import { SelectionMenu } from './AnnotationTools';
+import { HIGHLIGHT_FILLS } from './HighlightLayer';
+import { trackPresses } from './SelectionQuote';
 import { translationRuns } from '../lib/translation-text';
+import { highlighterInputs, markedText, translatedSelection } from '../lib/annotations';
+import type { CardAnchor } from '../lib/annotation-session';
 import type { EraserSize } from '../lib/eraser';
 
 /** A one-time full-page render of the original PDF, rasterised for cropping figures/tables/
@@ -204,12 +209,13 @@ interface KoreanPageViewProps {
   onHeight(page: number, heightPx: number): void;
   onSelectBlock(block: Block, via: SelectVia): void;
   highlights?:Highlight[];
+  drafts?:AnnotationInput[];
   annotationMode?:AnnotationMode;
-  annotationColor?:Highlight['color'];
+  penColor?:Highlight['color'];
+  penWidth?:number;
   annotationEraserSize?:EraserSize;
-  onCreateAnnotation?(input:AnnotationInput, openNote?:boolean):void;
+  onCreateAnnotations?(inputs:AnnotationInput[]):void;
   onOpenHighlight?(highlight:Highlight):void;
-  onAsk?(text:string):void;
   onEraseAnnotation?(highlightId:string):void;
 }
 
@@ -229,7 +235,7 @@ function KoreanPageView(props: KoreanPageViewProps): JSX.Element {
   const segments = useMemo(() => groupKoreanSegments(layout.items, layout.columnCount), [layout]);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const reportedHeight = useRef<number | null>(null);
-  const annotations = <TranslatedAnnotations containerRef={containerRef} page={page} zoom={zoom} blocks={blocks} translations={translations} modelId={modelId} highlights={props.highlights} annotationMode={props.annotationMode} annotationColor={props.annotationColor} annotationEraserSize={props.annotationEraserSize} onCreateAnnotation={props.onCreateAnnotation} onOpenHighlight={props.onOpenHighlight} onAsk={props.onAsk} onEraseAnnotation={props.onEraseAnnotation} />;
+  const annotations = <TranslatedAnnotations containerRef={containerRef} page={page} zoom={zoom} blocks={blocks} translations={translations} modelId={modelId} sourceOnly={layout.sourceOnly} highlights={props.highlights} drafts={props.drafts} annotationMode={props.annotationMode} penColor={props.penColor} penWidth={props.penWidth} annotationEraserSize={props.annotationEraserSize} onCreateAnnotations={props.onCreateAnnotations} onOpenHighlight={props.onOpenHighlight} onEraseAnnotation={props.onEraseAnnotation} />;
 
   useLayoutEffect(() => {
     const node = containerRef.current;
@@ -355,13 +361,32 @@ export interface KoreanPaneProps {
   onAdjustScroll?(): void;
   onSelectBlock(block: Block, via: SelectVia): void;
   highlights?:Highlight[];
+  /** Records not saved yet: highlighter sweeps waiting for the service, a new memo's selection. */
+  drafts?:AnnotationInput[];
   annotationMode?:AnnotationMode;
-  annotationColor?:Highlight['color'];
+  highlighterColor?:Highlight['color'];
+  /** The share of each marked line's height the highlighter paints. */
+  highlighterThickness?:number;
+  penColor?:Highlight['color'];
+  /** The pen's thickness as a share of the page width. */
+  penWidth?:number;
   annotationEraserSize?:EraserSize;
-  onCreateAnnotation?(input:AnnotationInput, openNote?:boolean):void;
+  /** Save these records at once, one per page. */
+  onCreateAnnotations?(inputs:AnnotationInput[]):void;
+  /** Open a memo card on a selection; `anchor` is the selection's right end. */
+  onStartMemo?(inputs:AnnotationInput[], anchor:CardAnchor):void;
   onOpenHighlight?(highlight:Highlight):void;
   onAsk?(text:string):void;
   onEraseAnnotation?(highlightId:string):void;
+}
+
+/** The records a selection in the Korean pane makes: one per translated page it covers. */
+function selectionInputs(body: HTMLElement, selection: Selection | null): AnnotationInput[] {
+  if (selection === null || selection.isCollapsed || selection.rangeCount === 0 || !body.contains(selection.anchorNode)) return [];
+  return Array.from(body.querySelectorAll<HTMLElement>(':scope > .kr-page[data-page]:not(.kr-placeholder):not(.kr-source-only)')).flatMap((element) => {
+    const input = translatedSelection(element, Number(element.dataset.page), selection);
+    return input === null ? [] : [input];
+  });
 }
 
 /**
@@ -371,6 +396,10 @@ export interface KoreanPaneProps {
  * so a long paper never lays out every Korean page at once (spec R06). Pages outside the
  * window are held with a fixed-size placeholder so the scrollbar keeps a sane proportion even
  * though a Korean page's true height is not known until it is actually drawn.
+ *
+ * The Korean pages are real text, so a selection is the browser's own. Once it is finished, the
+ * select tool offers the selection menu beside it and the highlighter saves it at once, one
+ * record per page it covers. A click that selects nothing on a highlight opens its memo card.
  */
 export function KoreanPages(props: KoreanPaneProps): JSX.Element {
   const { doc, pageCount, currentPage, zoom, blocks, translations, pageHeights, pageIntrinsicSize, onPageHeight, bodyRef, onScroll, onAdjustScroll, onSelectBlock } = props;
@@ -406,6 +435,83 @@ export function KoreanPages(props: KoreanPaneProps): JSX.Element {
     [bodyRef, fallbackHeight, onAdjustScroll, onPageHeight, pageHeights],
   );
 
+  const mode = props.annotationMode ?? 'select';
+  const [menu, setMenu] = useState<{ inputs: AnnotationInput[]; position: CardAnchor; end: CardAnchor } | null>(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
+  // The listeners below outlive the render that added them; they read the props here.
+  const latest = useRef(props);
+  latest.current = props;
+  useEffect(() => {
+    setMenu(null);
+    if (mode !== 'select' && mode !== 'highlight') return;
+    let frame: number | null = null;
+    let released = false;
+    const measure = () => {
+      frame = null;
+      const fromRelease = released;
+      released = false;
+      const body = bodyRef.current;
+      const current = latest.current;
+      const selection = window.getSelection();
+      const inputs = body === null ? [] : selectionInputs(body, selection);
+      if (inputs.length === 0 || selection === null || current.onCreateAnnotations === undefined) {
+        setMenu(null);
+        return;
+      }
+      if (mode === 'highlight') {
+        // Only a drag paints; a selection made with the keyboard waits for the select tool.
+        if (!fromRelease) return;
+        current.onCreateAnnotations(highlighterInputs(inputs, current.highlighterColor ?? 'yellow', current.highlighterThickness));
+        selection.removeAllRanges();
+        return;
+      }
+      const last = Array.from(selection.getRangeAt(0).getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0).at(-1);
+      if (last === undefined) {
+        setMenu(null);
+        return;
+      }
+      setMenu({ inputs, position: { left: last.right, top: last.bottom }, end: { left: last.right, top: last.top } });
+    };
+    const schedule = () => {
+      if (!presses.pressed && frame === null) frame = window.requestAnimationFrame(measure);
+    };
+    const presses = trackPresses(
+      document,
+      (event) => {
+        const body = bodyRef.current;
+        return body !== null && event.target instanceof Node && body.contains(event.target);
+      },
+      { onPress: () => setMenu(null), onRelease: () => { released = true; schedule(); } },
+    );
+    document.addEventListener('selectionchange', schedule);
+    return () => {
+      presses.dispose();
+      document.removeEventListener('selectionchange', schedule);
+      if (frame !== null) window.cancelAnimationFrame(frame);
+    };
+  }, [bodyRef, mode]);
+
+  // The highlight boxes let the pointer through to the text, so a drag that starts on a
+  // highlight still selects; a click that selected nothing is matched to them here.
+  const openAt = (event: React.MouseEvent<HTMLDivElement>) => {
+    const current = latest.current;
+    const target = event.target instanceof Element ? event.target : null;
+    if (event.detail !== 1 || target === null || target.closest('.memo-icon, .saved-ink') !== null || (mode !== 'select' && mode !== 'highlight')) return;
+    const selection = window.getSelection();
+    if (selection !== null && !selection.isCollapsed) return;
+    const page = target.closest<HTMLElement>('.kr-page[data-page]');
+    if (page === null) return;
+    const box = Array.from(page.querySelectorAll<HTMLElement>('.highlight-layer > .highlight-box[data-highlight-id]')).reverse().find((element) => {
+      const rect = element.getBoundingClientRect();
+      return event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
+    });
+    const hit = box === undefined ? undefined : current.highlights?.find((highlight) => highlight.highlightId === box.dataset.highlightId);
+    if (hit === undefined) return;
+    // Opening the highlight is the click's whole effect: the paragraph beneath does not jump.
+    event.stopPropagation();
+    current.onOpenHighlight?.(hit);
+  };
+
   if (doc === null) {
     return (
       <div className="pane-body" ref={bodyRef} onScroll={onScroll}>
@@ -414,38 +520,63 @@ export function KoreanPages(props: KoreanPaneProps): JSX.Element {
     );
   }
 
+  const menuText = menu === null ? '' : markedText(menu.inputs);
+  const finishMenu = () => {
+    window.getSelection()?.removeAllRanges();
+    setMenu(null);
+  };
   return (
-    <div className="pane-body" ref={bodyRef} onScroll={onScroll} data-testid="korean-body">
-      {Array.from({ length: pageCount }, (_, index) => index + 1).map((page) =>
-        live.has(page) ? (
-          <KoreanPageView
-            key={page}
-            doc={doc}
-            page={page}
-            zoom={zoom}
-            dpr={dpr}
-            blocks={blocks}
-            translations={translations}
-            modelId={props.modelId}
-            placeholder={placeholderSize(page)}
-            onHeight={reportHeight}
-            onSelectBlock={onSelectBlock}
-            highlights={props.highlights}
-            annotationMode={props.annotationMode}
-            annotationColor={props.annotationColor}
-            annotationEraserSize={props.annotationEraserSize}
-            onCreateAnnotation={props.onCreateAnnotation}
-            onOpenHighlight={props.onOpenHighlight}
-            onAsk={props.onAsk}
-            onEraseAnnotation={props.onEraseAnnotation}
-          />
-        ) : (
-          <div key={page} className="kr-page kr-placeholder" data-page={page} style={placeholderSize(page)}>
-            {page}쪽
-          </div>
-        ),
-      )}
-    </div>
+    <>
+      <div
+        className={`pane-body${mode === 'highlight' ? ' is-highlighting' : ''}`}
+        style={mode === 'highlight' ? ({ '--highlighter': HIGHLIGHT_FILLS[props.highlighterColor ?? 'yellow'] } as CSSProperties) : undefined}
+        ref={bodyRef}
+        onScroll={onScroll}
+        onClickCapture={openAt}
+        data-testid="korean-body"
+      >
+        {Array.from({ length: pageCount }, (_, index) => index + 1).map((page) =>
+          live.has(page) ? (
+            <KoreanPageView
+              key={page}
+              doc={doc}
+              page={page}
+              zoom={zoom}
+              dpr={dpr}
+              blocks={blocks}
+              translations={translations}
+              modelId={props.modelId}
+              placeholder={placeholderSize(page)}
+              onHeight={reportHeight}
+              onSelectBlock={onSelectBlock}
+              highlights={props.highlights}
+              drafts={props.drafts}
+              annotationMode={props.annotationMode}
+              penColor={props.penColor}
+              penWidth={props.penWidth}
+              annotationEraserSize={props.annotationEraserSize}
+              onCreateAnnotations={props.onCreateAnnotations}
+              onOpenHighlight={props.onOpenHighlight}
+              onEraseAnnotation={props.onEraseAnnotation}
+            />
+          ) : (
+            <div key={page} className="kr-page kr-placeholder" data-page={page} style={placeholderSize(page)}>
+              {page}쪽
+            </div>
+          ),
+        )}
+      </div>
+      {menu !== null ? (
+        <SelectionMenu
+          text={menuText}
+          position={menu.position}
+          onHighlight={(color) => { props.onCreateAnnotations?.(highlighterInputs(menu.inputs, color)); finishMenu(); }}
+          onMemo={() => { props.onStartMemo?.(menu.inputs, menu.end); finishMenu(); }}
+          onAsk={props.onAsk === undefined ? undefined : () => { props.onAsk?.(menuText); finishMenu(); }}
+          onClose={closeMenu}
+        />
+      ) : null}
+    </>
   );
 }
 

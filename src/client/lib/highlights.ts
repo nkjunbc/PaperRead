@@ -13,17 +13,6 @@ function clamp01(value: number): number {
 }
 
 /**
- * Only a selection that starts and ends on the same page can become a
- * highlight. `null` on either side means the endpoint is not inside any
- * tracked page; a mismatch means the drag crossed a page boundary.
- */
-export function resolveSelectionPage(startPage: number | null, endPage: number | null): number | null {
-  if (startPage === null || endPage === null) return null;
-  if (startPage !== endPage) return null;
-  return startPage;
-}
-
-/**
  * Merge rects that sit on the same visual line and overlap (or nearly touch)
  * horizontally into a single bounding box, so a multi-span selection on one
  * line does not produce one rect per glyph run.
@@ -132,39 +121,136 @@ function rowsOf(spans: SpanBox[]): Row[] {
   return rows.sort((a, b) => a.top - b.top);
 }
 
-function rowAt(rows: Row[], y: number): number {
-  const inside = rows.findIndex((row) => y >= row.top && y <= row.bottom);
-  if (inside >= 0) return inside;
-  let best = -1;
-  let bestDistance = Number.POSITIVE_INFINITY;
-  rows.forEach((row, index) => {
-    const distance = y < row.top ? row.top - y : y - row.bottom;
-    if (distance < bestDistance && distance <= (row.bottom - row.top) * 1.5) {
-      best = index;
-      bestDistance = distance;
-    }
-  });
-  return best;
+const bottomOf = (rect: PixelRect) => rect.top + rect.height;
+const rightOf = (rect: PixelRect) => rect.left + rect.width;
+
+/** How wide the space before a run may be, on the run's row, for the two runs it parts to be
+ * words of one line: a space at least this wide parts two lines (two columns' lines). */
+type WordSpace = (span: SpanBox) => number;
+
+/** The page's text columns: each one's left edge, the long runs that begin its lines, and the
+ * word's space they were found with. */
+interface Columns {
+  edges: number[];
+  lines: SpanBox[];
+  wordSpace: WordSpace;
+}
+
+const overlap = (a: PixelRect, b: PixelRect) => Math.min(bottomOf(a), bottomOf(b)) - Math.max(a.top, b.top);
+
+/** A piece of a line (linePieces), with the word's space of the row it begins on. */
+interface Piece extends SpanBox {
+  space: number;
 }
 
 /**
- * The left edges of the page's text columns, found from its long runs: every long run
- * starts at its column's left edge (a paragraph's first line may be indented by a word or
- * so, which the tolerance absorbs). Justified columns can overlap horizontally, so a run's
- * left edge, never its centre or right edge, is what identifies its column.
+ * The pieces of the page's lines: runs on one line that follow each other a word's space apart
+ * (or touch) are one piece. pdf.js gives some PDFs a run for every word; only put back together
+ * do they show where a column's lines begin and how far they reach. A gutter is wider than a
+ * word's space, so a piece never runs from one column into the next.
  */
-function columnEdges(spans: SpanBox[]): number[] {
-  const lineHeight = spans.reduce((sum, span) => sum + span.rect.height, 0) / spans.length;
-  const longRuns = spans.filter((span) => span.rect.width >= lineHeight * COLUMN_EVIDENCE_LINES);
-  const edges: { left: number; count: number }[] = [];
-  for (const span of longRuns.sort((a, b) => a.rect.left - b.rect.left)) {
-    const edge = edges.find((candidate) => Math.abs(candidate.left - span.rect.left) <= lineHeight * COLUMN_EDGE_TOLERANCE_LINES);
-    if (edge === undefined) edges.push({ left: span.rect.left, count: 1 });
-    else edge.count += 1;
+function linePieces(spans: SpanBox[], wordSpace: WordSpace): Piece[] {
+  const pieces: { rect: PixelRect; text: string; first: PixelRect; last: PixelRect; space: number }[] = [];
+  for (const span of [...spans].sort((a, b) => a.rect.left - b.rect.left)) {
+    const sameLine = (rect: PixelRect) => overlap(rect, span.rect) > Math.min(rect.height, span.rect.height) / 2;
+    const piece = pieces.find((candidate) => {
+      const gap = span.rect.left - rightOf(candidate.rect);
+      return gap >= -1 && gap < wordSpace(span) && (sameLine(candidate.first) || sameLine(candidate.last));
+    });
+    if (piece === undefined) {
+      pieces.push({ rect: span.rect, text: span.text, first: span.rect, last: span.rect, space: wordSpace(span) });
+      continue;
+    }
+    piece.rect = unionRect([piece.rect, span.rect]);
+    piece.text = `${piece.text} ${span.text}`;
+    piece.last = span.rect;
   }
+  return pieces.map(({ rect, text, space }) => ({ rect, text, space }));
+}
+
+/**
+ * A word's space on a page whose words may be set wider apart than half a line, as justified
+ * text sets those of a loose line: on a row set word by word (three spaces or more between its
+ * runs), a space narrower than half again the row's usual one. A gutter is wider than that, and
+ * no space as wide as a line is tall is a word's: a gutter is wider still. A row of a few runs
+ * (a line in one run, two columns' lines side by side) has no usual space to go by; there a
+ * word's space stays narrower than half a line.
+ */
+function looseWordSpace(spans: SpanBox[], lineHeight: number): WordSpace {
+  const rowSpace = new Map<SpanBox, number>();
+  for (const row of rowsOf(spans)) {
+    const spaces: number[] = [];
+    let reach = rightOf(row.spans[0].rect);
+    for (const span of row.spans.slice(1)) {
+      if (span.rect.left - reach > 1) spaces.push(span.rect.left - reach);
+      reach = Math.max(reach, rightOf(span.rect));
+    }
+    const space = Math.max(lineHeight * 0.5, spaces.length >= 3 ? Math.min(lineHeight, median(spaces) * 1.5) : 0);
+    for (const span of row.spans) rowSpace.set(span, space);
+  }
+  return (span) => rowSpace.get(span) ?? lineHeight * 0.5;
+}
+
+/**
+ * The page's text columns, found from its long runs: every long run starts at its column's
+ * left edge (a paragraph's first line may be indented by a word or so, which the tolerance
+ * absorbs). Justified columns can overlap horizontally, so a run's left edge, never its centre
+ * or right edge, is what identifies its column.
+ *
+ * pdf.js also splits lines part-way along (at a change of font, a wide space, after a section
+ * number): a run that begins a word's space after another on its line does not begin the line,
+ * and long second runs that begin at about the same place on a few lines are no column, for a
+ * column edge has a gutter before it: more of its lines begin there than run from further left
+ * across it to its column's far side. A column after the first also stands beside another,
+ * with that column's lines to the left of its own; a block indented within a column (an
+ * abstract, a list, a section title after its number) or text centred above or below the
+ * columns (a title, a footer) has none.
+ *
+ * The evidence is read from the pieces of the lines (linePieces), never the runs themselves: a
+ * page whose every word is a run of its own has no long run, yet its lines are long pieces.
+ * Their words are a word's space apart, narrower than half a line. A page whose columns no line
+ * shows that way is read again with the words of a loose line as one piece (looseWordSpace),
+ * and taken as columns only when that finds columns its lines bear out.
+ */
+function columnsOf(spans: SpanBox[], lineHeight: number): Columns {
+  const tight: WordSpace = () => lineHeight * 0.5;
+  const found = columnsWith(spans, lineHeight, tight);
+  if (found.edges.length > 1) return { edges: found.edges, lines: found.lines, wordSpace: tight };
+  const loose = looseWordSpace(spans, lineHeight);
+  const wider = columnsWith(spans, lineHeight, loose);
+  return wider.supported > 1 ? { edges: wider.edges, lines: wider.lines, wordSpace: loose } : { edges: found.edges, lines: found.lines, wordSpace: tight };
+}
+
+/** The columns the pieces of the lines show with `wordSpace` (columnsOf), and how many of them
+ * their lines bear out. */
+function columnsWith(spans: SpanBox[], lineHeight: number, wordSpace: WordSpace): { edges: number[]; lines: SpanBox[]; supported: number } {
+  const pieces = linePieces(spans, wordSpace);
+  const continues = (span: Piece) => pieces.some((other) => other !== span && overlap(other.rect, span.rect) > Math.min(other.rect.height, span.rect.height) / 2
+    && rightOf(other.rect) <= span.rect.left + 1 && span.rect.left - rightOf(other.rect) < span.space);
+  const longRuns = pieces.filter((span) => span.rect.width >= lineHeight * COLUMN_EVIDENCE_LINES && !continues(span));
+  const clusters: { left: number; right: number; lines: SpanBox[] }[] = [];
+  for (const span of longRuns.sort((a, b) => a.rect.left - b.rect.left)) {
+    const cluster = clusters.find((candidate) => Math.abs(candidate.left - span.rect.left) <= lineHeight * COLUMN_EDGE_TOLERANCE_LINES);
+    if (cluster === undefined) clusters.push({ left: span.rect.left, right: rightOf(span.rect), lines: [span] });
+    else {
+      cluster.lines.push(span);
+      cluster.right = Math.max(cluster.right, rightOf(span.rect));
+    }
+  }
+  // Runs of the column before may overshoot into this one (justified columns can overlap);
+  // only a run reaching past the middle of this column's lines runs across it.
+  const runAcross = (column: { left: number; right: number }) => pieces.filter((span) => span.rect.left < column.left - lineHeight * 0.5 && rightOf(span.rect) > (column.left + column.right) / 2).length;
+  const beside = (column: { left: number; lines: SpanBox[] }, before: SpanBox[]) => column.lines.filter((line) => before.some((other) => other.rect.left < column.left - lineHeight && overlap(other.rect, line.rect) > 0)).length;
   // A column needs a few lines of evidence; a single wide caption or equation is not one.
-  const supported = edges.filter((edge) => edge.count >= 3);
-  return (supported.length > 0 ? supported : edges).map((edge) => edge.left);
+  const supported: typeof clusters = [];
+  for (const cluster of clusters) {
+    if (cluster.lines.length < 3 || runAcross(cluster) >= cluster.lines.length) continue;
+    if (supported.length > 0 && beside(cluster, supported.flatMap((column) => column.lines)) < 3) continue;
+    supported.push(cluster);
+  }
+  const found = supported.length > 0 ? supported : clusters;
+  if (found.length === 0) return { edges: [Math.min(...spans.map((span) => span.rect.left))], lines: [], supported: 0 };
+  return { edges: found.map((cluster) => cluster.left), lines: found.flatMap((cluster) => cluster.lines), supported: supported.length };
 }
 
 /**
@@ -186,12 +272,10 @@ function columnOf(edges: number[], rect: PixelRect, lineHeight: number): number 
   return column;
 }
 
-/** The column the drag started in: the last column whose left edge is at or left of the
- * start point. Judged from the point itself, so an offset baseline between the two
- * columns (which can put the start row's nearest run in the other column) cannot mislead. */
+/** The column a point is in: the last column whose left edge is at or left of it, with the
+ * same half-line tolerance as columnOf, so a drag begun a few pixels before a column's first
+ * glyph is still a drag in that column. */
 function columnAt(x: number, edges: number[], lineHeight: number): number {
-  // The same half-line tolerance as columnOf: a drag begun a few pixels before a column's
-  // first glyph is still a drag in that column.
   let column = 0;
   for (let index = 1; index < edges.length; index += 1) if (x >= edges[index] - lineHeight * 0.5) column = index;
   return column;
@@ -205,77 +289,194 @@ function unionRect(rects: PixelRect[]): PixelRect {
   return { left, top, width: right - left, height: bottom - top };
 }
 
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
+/** One printed line in reading order. `column` is -1 for a line that runs across the columns. */
+interface Line extends Row {
+  band: number;
+  column: number;
+}
+
 /**
- * The runs a reader swept with the mouse, as a printed-page selection works: on one line,
- * everything between the two points; across lines, the rest of the first line, every line
- * between inside the same column, and the start of the last line.
+ * The page's lines in reading order, as a reader of a printed page takes them: down the first
+ * column, then down the next. A line running across the columns (a title, a full-width
+ * caption) divides the page into bands, each read column by column, with the dividing line
+ * read between them. Lines are grouped per column, so the two columns' lines are never one
+ * row however close their baselines sit.
+ *
+ * Above the columns' text a page may have its head (a title and author block, a running head)
+ * and below it its foot (a page number, a conference footer): everything from the column text
+ * out to a line crossing a gutter there is read before or after the columns, line by line
+ * across the page, never as the start or end of one column.
+ */
+function readingOrder(spans: SpanBox[]): { lines: Line[]; locate(point: Point): number } | null {
+  if (spans.length === 0) return null;
+  const lineHeight = median(spans.map((span) => span.rect.height));
+  const { edges, lines: columnLines, wordSpace } = columnsOf(spans, lineHeight);
+  const lastEdge = edges[edges.length - 1];
+  const pageRight = Math.max(...spans.map((span) => rightOf(span.rect)));
+  // Across the columns: begins in the first column and reaches past the middle of the last.
+  // pdf.js may split such a line into runs a word's space apart (a caption): they are one line.
+  // Runs that overlap by half a line or more are two columns' lines that overshoot, never one.
+  const across = new Set<SpanBox>();
+  const acrossLine = (runs: SpanBox[]) => {
+    if (runs.length > 0 && runs[0].rect.left < edges[1] - lineHeight * 0.5 && Math.max(...runs.map((run) => rightOf(run.rect))) > (lastEdge + pageRight) / 2) for (const run of runs) across.add(run);
+  };
+  if (edges.length > 1) {
+    for (const row of rowsOf(spans)) {
+      let runs: SpanBox[] = [];
+      for (const span of row.spans) {
+        const gap = span.rect.left - Math.max(...runs.map((run) => rightOf(run.rect)));
+        if (runs.length > 0 && (gap <= -lineHeight * 0.5 || gap >= wordSpace(span))) {
+          acrossLine(runs);
+          runs = [];
+        }
+        runs.push(span);
+      }
+      acrossLine(runs);
+    }
+  }
+  const crossesGutter = (rect: PixelRect) => edges.slice(1).some((edge) => rect.left < edge - lineHeight * 0.5 && rightOf(rect) > edge);
+  const bodyTop = Math.min(...columnLines.map((span) => span.rect.top));
+  const bodyBottom = Math.max(...columnLines.map((span) => bottomOf(span.rect)));
+  const crossing = spans.filter((span) => crossesGutter(span.rect));
+  const head = Math.max(...crossing.filter((span) => bottomOf(span.rect) <= bodyTop + lineHeight * 0.25).map((span) => bottomOf(span.rect)));
+  const foot = Math.min(...crossing.filter((span) => span.rect.top >= bodyBottom - lineHeight * 0.25).map((span) => span.rect.top));
+  const furniture = (rect: PixelRect) => bottomOf(rect) <= head + lineHeight * 0.25 || rect.top >= foot - lineHeight * 0.25;
+  const divides = (span: SpanBox) => across.has(span) || furniture(span.rect);
+  const dividers = rowsOf(spans.filter(divides));
+  const bandAt = (y: number) => dividers.filter((divider) => (divider.top + divider.bottom) / 2 < y).length;
+  const columns = edges.map((): SpanBox[] => []);
+  for (const span of spans) if (!divides(span)) columns[columnOf(edges, span.rect, lineHeight)].push(span);
+
+  const lines: Line[] = [];
+  for (let band = 0; band <= dividers.length; band += 1) {
+    columns.forEach((columnSpans, column) => {
+      const inBand = columnSpans.filter((span) => bandAt(span.rect.top + span.rect.height / 2) === band);
+      for (const row of rowsOf(inBand)) lines.push({ ...row, band, column });
+    });
+    if (band < dividers.length) lines.push({ ...dividers[band], band, column: -1 });
+  }
+
+  /** The line a point is on: a dividing line under it, else the nearest line of its column in
+   * its band, within a line and a half; -1 when it is nowhere near text. */
+  const locate = ({ x, y }: Point): number => {
+    const divider = lines.findIndex((line) => line.column === -1 && y >= line.top && y <= line.bottom);
+    if (divider >= 0) return divider;
+    const band = bandAt(y);
+    const column = columnAt(x, edges, lineHeight);
+    let best = -1;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    lines.forEach((line, index) => {
+      if (line.band !== band || line.column !== column) return;
+      const distance = y < line.top ? line.top - y : y > line.bottom ? y - line.bottom : 0;
+      if (distance < bestDistance && distance <= (line.bottom - line.top) * 1.5) {
+        best = index;
+        bestDistance = distance;
+      }
+    });
+    return best;
+  };
+  return { lines, locate };
+}
+
+/** Either end of a sweep: a point on the page, or the page's first or last line for a page
+ * that a drag crossing pages begins before or ends after. */
+export type SweepEnd = Point | 'start' | 'end';
+
+/**
+ * The runs a reader swept with the mouse, as a printed-page selection works: in reading order
+ * from one point to the other, the rest of the first line, every line between and the start
+ * of the last. A drag from the foot of the left column to the head of the right one takes the
+ * end of the left column and the top of the right, never the gutter or the lines beside it.
  *
  * The browser's own selection cannot be used for this: pdf.js emits its runs in content-
  * stream order, so a DOM range between two nearby runs can span half a page of equation
- * pieces and the other column. Returns one rect per swept line plus the swept text.
+ * pieces and the other column. Returns one rect per swept line plus the swept text. A rect
+ * takes its height from the line's text runs; pdf.js glyph boxes are taller than the line,
+ * and neighbouring lines' boxes would overlap.
  */
-export function sweepSelection(spans: SpanBox[], down: Point, up: Point): { rects: PixelRect[]; text: string } | null {
-  const usable = spans.filter((span) => span.rect.width > 0 && span.rect.height > 0 && span.text.trim().length > 0);
-  const rows = rowsOf(usable);
-  if (rows.length === 0) return null;
-  const edges = columnEdges(usable);
-  const lineHeight = usable.reduce((sum, span) => sum + span.rect.height, 0) / usable.length;
-  const [start, end] = down.y < up.y || (down.y === up.y && down.x <= up.x) ? [down, up] : [up, down];
-  const startRow = rowAt(rows, start.y);
-  const endRow = rowAt(rows, end.y);
-  if (startRow < 0 || endRow < 0) return null;
-  const [first, last] = startRow <= endRow ? [startRow, endRow] : [endRow, startRow];
+export function sweepSelection(spans: SpanBox[], from: SweepEnd, to: SweepEnd): { rects: PixelRect[]; text: string } | null {
+  const layout = readingOrder(spans.filter((span) => span.rect.width > 0 && span.rect.height > 0 && span.text.trim().length > 0));
+  if (layout === null) return null;
+  const { lines, locate } = layout;
+  const place = (end: SweepEnd) => (end === 'start' ? { line: 0, x: -Infinity } : end === 'end' ? { line: lines.length - 1, x: Infinity } : { line: locate(end), x: end.x });
+  const a = place(from);
+  const b = place(to);
+  if (a.line < 0 || b.line < 0) return null;
+  const [first, last] = a.line < b.line || (a.line === b.line && a.x <= b.x) ? [a, b] : [b, a];
 
-  const picked: SpanBox[][] = [];
-  if (first === last) {
-    const [lo, hi] = [Math.min(start.x, end.x), Math.max(start.x, end.x)];
-    picked.push(rows[first].spans.filter((span) => span.rect.left <= hi && span.rect.left + span.rect.width >= lo));
-  } else {
-    // The column is the one the drag started in. Justified columns in a two-column paper
-    // can overlap horizontally (a left-column run's right edge past the right column's
-    // left edge), so each run is placed by which column edge its own left edge is
-    // nearest to — a run that begins at the other column's edge is never swept in.
-    const column = columnAt(start.x, edges, lineHeight);
-    const inColumn = (span: SpanBox) => columnOf(edges, span.rect, lineHeight) === column;
-    for (let index = first; index <= last; index += 1) {
-      const row = rows[index].spans.filter(inColumn);
-      if (index === first) picked.push(row.filter((span) => span.rect.left + span.rect.width >= start.x));
-      else if (index === last) picked.push(row.filter((span) => span.rect.left <= end.x));
-      else picked.push(row);
-    }
-  }
-
-  // Clip endpoints by measured glyphs. Selecting one word in a long pdf.js span must not
-  // select that entire span; estimating offsets from average character width also fails
-  // for proportional fonts, math, ligatures and horizontally scaled text layers.
-  const lines = picked.map((row, index) => {
-    const lo = first === last ? Math.min(start.x, end.x) : index === 0 ? start.x : -Infinity;
-    const hi = first === last ? Math.max(start.x, end.x) : index === picked.length - 1 ? end.x : Infinity;
-    return row.flatMap((span): SpanBox[] => {
-      if (!span.glyphs) return [span];
-      const glyphs = span.glyphs.filter((glyph) => {
-        const middle = glyph.rect.left + glyph.rect.width / 2;
-        return middle >= lo && middle <= hi;
+  const swept: { rect: PixelRect; text: string }[] = [];
+  for (let index = first.line; index <= last.line; index += 1) {
+    const lo = index === first.line ? first.x : -Infinity;
+    const hi = index === last.line ? last.x : Infinity;
+    // Clip the ends by measured glyphs. Selecting one word in a long pdf.js span must not
+    // select that entire span; estimating offsets from average character width also fails
+    // for proportional fonts, math, ligatures and horizontally scaled text layers.
+    const pieces = lines[index].spans
+      .filter((span) => span.rect.left + span.rect.width >= lo && span.rect.left <= hi)
+      .flatMap((span): { rect: PixelRect; text: string }[] => {
+        if (!span.glyphs) return [span];
+        const glyphs = span.glyphs.filter((glyph) => {
+          const middle = glyph.rect.left + glyph.rect.width / 2;
+          return middle >= lo && middle <= hi;
+        });
+        if (glyphs.length === 0) return [];
+        const across = unionRect(glyphs.map((glyph) => glyph.rect));
+        return [{ text: glyphs.map((glyph) => glyph.text).join(''), rect: { left: across.left, top: span.rect.top, width: across.width, height: span.rect.height } }];
       });
-      if (glyphs.length === 0) return [];
-      return [{ text: glyphs.map((glyph) => glyph.text).join(''), rect: unionRect(glyphs.map((glyph) => glyph.rect)) }];
-    });
-  }).filter((row) => row.length > 0);
-  if (lines.length === 0) return null;
+    if (pieces.length === 0) continue;
+    swept.push({ rect: unionRect(pieces.map((piece) => piece.rect)), text: pieces.map((piece) => piece.text).join(' ') });
+  }
+  if (swept.length === 0) return null;
   return {
-    rects: lines.map((row) => unionRect(row.map((span) => span.rect))),
-    text: lines.map((row) => row.map((span) => span.text).join(' ')).join(' ').replace(/\s+/g, ' ').trim(),
+    rects: swept.map((line) => line.rect),
+    text: swept.map((line) => line.text).join(' ').replace(/\s+/g, ' ').trim(),
   };
+}
+
+/** One end of a drag that may cross pages: the page and a point in page-local pixels. */
+export interface PagePoint {
+  page: number;
+  point: Point;
+}
+
+export interface PageSweep {
+  page: number;
+  rects: PixelRect[];
+  text: string;
+}
+
+/**
+ * A drag that crosses pages, swept page by page: on the first page from the start to its last
+ * line, every page between whole, and on the last page from its first line to the end. A page
+ * whose text was never measured (not drawn while the drag passed) is skipped, never guessed.
+ */
+export function sweepPages(spansOf: (page: number) => SpanBox[] | undefined, from: PagePoint, to: PagePoint): PageSweep[] {
+  const [first, last] = from.page <= to.page ? [from, to] : [to, from];
+  const sweeps: PageSweep[] = [];
+  for (let page = first.page; page <= last.page; page += 1) {
+    const spans = spansOf(page);
+    if (spans === undefined) continue;
+    const swept = sweepSelection(spans, page === first.page ? first.point : 'start', page === last.page ? last.point : 'end');
+    if (swept !== null) sweeps.push({ page, ...swept });
+  }
+  return sweeps;
 }
 
 /**
  * The full pipeline from a drag selection to storable highlight rects:
  * merge same-line rects first (fewer, cleaner boxes), then convert to
  * page-ratio regions. Returns `null` when nothing survives (e.g. every rect
- * was entirely outside the page box).
+ * was entirely outside the page box). Every line is kept: a selection that
+ * marks more lines than a record holds is refused before it is saved
+ * (AnnotationSession), never cut short here.
  */
 export function selectionToRegions(rawRects: PixelRect[], pageBox: PixelRect, page: number): Region[] | null {
   const merged = mergeLineRects(rawRects.filter((r) => r.width > 0 && r.height > 0));
-  const regions = rectsToRegions(merged, pageBox, page).slice(0, 200);
+  const regions = rectsToRegions(merged, pageBox, page);
   return regions.length > 0 ? regions : null;
 }

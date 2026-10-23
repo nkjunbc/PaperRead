@@ -25,6 +25,7 @@ import {
   questionCounter,
   questionCounterLabel,
   questionParts,
+  quoteNotice,
   retryQuestion,
   recoverQuestionDraft,
   withSuggestion,
@@ -202,6 +203,8 @@ export interface ChatViewProps {
   modelId: string;
   /** Said under the model choice, e.g. that the saved default cannot be used. */
   modelNotice?: string | null;
+  /** Said under the composer when a quote went in only in part. */
+  quoteNotice?: string | null;
   draft: string;
   sending: PendingQuestion | null;
   stopping: boolean;
@@ -465,6 +468,7 @@ export function ChatView(props: ChatViewProps): JSX.Element {
             )}
           </div>
         </form>
+        {props.quoteNotice ? <p className="chat__notice" role="status">{props.quoteNotice}</p> : null}
         {blocked !== null ? (
           <p id={hintId} className="chat__blocked" role="status">
             <span>{blocked.message}</span>
@@ -536,6 +540,8 @@ export function ChatPanel({ client, paperKey, paper, connection, canMutate, pref
   const [confirmingClear, setConfirmingClear] = useState(false);
   const [pinned, setPinned] = useState(true);
   const [announcement, setAnnouncement] = useState('');
+  /** A quote too long to go in whole says so until the question is sent or the composer emptied. */
+  const [quoteNote, setQuoteNote] = useState<string | null>(null);
   /** Bumped when the composer's end should come into view once the new draft is laid out. */
   const [reveal, setReveal] = useState(0);
 
@@ -754,6 +760,7 @@ export function ChatPanel({ client, paperKey, paper, connection, canMutate, pref
   useEffect(() => {
     if (quote === null) return;
     setDraft((current) => insertQuote(current, quote.text));
+    setQuoteNote((current) => quoteNotice(quote.text) ?? current);
     setReveal((count) => count + 1);
     // Only a new quote (id) is applied; the same one is never applied twice.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -793,7 +800,10 @@ export function ChatPanel({ client, paperKey, paper, connection, canMutate, pref
       setAskError(null);
       // A new question settles a pending "새 대화" confirmation: the conversation goes on.
       setConfirmingClear(false);
-      if (!retry) setDraft('');
+      if (!retry) {
+        setDraft('');
+        setQuoteNote(null);
+      }
       try {
         const { conversation: next } = await client.askQuestion(paperKey, retry ? { question, modelId: model, retry: true } : { question, modelId: model });
         if (mine === epoch.current) setConversation(next);
@@ -908,11 +918,15 @@ export function ChatPanel({ client, paperKey, paper, connection, canMutate, pref
       pinned={pinned}
       announcement={announcement}
       modelNotice={pinnedModelNotice(pinnedModel, chosenModel) ?? preferredModelFallback(connection)}
+      quoteNotice={quoteNote}
       onModelChange={(id) => {
         setChosenModel(id);
         onModelChange(id);
       }}
-      onDraftChange={setDraft}
+      onDraftChange={(value) => {
+        setDraft(value);
+        if (value.trim().length === 0) setQuoteNote(null);
+      }}
       onSend={send}
       onStop={() => void stop()}
       onRetry={retry}

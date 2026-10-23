@@ -435,6 +435,7 @@ export class PaperStore {
     try {
       rmSync(join(dir, TRANSLATIONS_FILE), { force: true });
       rmSync(join(dir, JOB_FILE), { force: true });
+      this.removeTranslationHighlights(record.paperKey);
       const job = this.restartJob(record, state, pauseReason);
       this.writeRestartJob(job);
       this.writeRestartJobsIndex(record);
@@ -443,6 +444,17 @@ export class PaperStore {
       if (cause instanceof AppErrorException) throw cause;
       throw storageError(`failed to publish translation restart for ${record.paperKey}`, cause);
     }
+  }
+
+  /**
+   * Korean-side highlights, memos and ink were made on the translation a restart deletes, so
+   * they go with it; source-side records stay. Idempotent, as recovery replays a reset. A file
+   * that cannot be read reads as no records here and is left exactly as it is.
+   */
+  private removeTranslationHighlights(paperKey: string): void {
+    const existing = this.listHighlights(paperKey);
+    const kept = existing.filter((highlight) => highlight.surface !== 'translation');
+    if (kept.length !== existing.length) writeRecord(join(this.paperDir(paperKey), HIGHLIGHTS_FILE), kept);
   }
 
   private recoverReset(record: TranslationResetRecord): void {
@@ -599,7 +611,7 @@ export class PaperStore {
   saveHighlight(paperKey: string, highlight: Highlight): Highlight {
     assertSafeKey(paperKey);
     const validated = validateHighlight(highlight, paperKey);
-    const existing = this.listHighlights(paperKey);
+    const existing = this.highlightsForWrite(paperKey);
     const index = existing.findIndex((h) => h.highlightId === validated.highlightId);
     if (index >= 0) existing[index] = validated;
     else existing.push(validated);
@@ -608,27 +620,70 @@ export class PaperStore {
     return validated;
   }
 
-  /** Read all committed highlights for a paper. Torn or unreadable records read as []. */
-  listHighlights(paperKey: string): Highlight[] {
+  /**
+   * Add several new highlights in one commit: the per-page records of one selection that
+   * crosses pages are stored together or not at all.
+   */
+  addHighlights(paperKey: string, highlights: Highlight[]): Highlight[] {
     assertSafeKey(paperKey);
-    const record = readRecord<Highlight[]>(join(this.root, paperKey, HIGHLIGHTS_FILE));
-    if (record === null || !Array.isArray(record)) return [];
+    const validated = highlights.map((highlight) => validateHighlight(highlight, paperKey));
+    const existing = this.highlightsForWrite(paperKey);
+    if (validated.some((highlight) => existing.some((stored) => stored.highlightId === highlight.highlightId))) {
+      throw invalidInput('highlight already exists');
+    }
+    writeRecord(join(this.ensurePaperDir(paperKey), HIGHLIGHTS_FILE), [...existing, ...validated]);
+    return validated;
+  }
+
+  /** The committed highlights of a paper: none when it has no file, null when a file is there
+   * but cannot be read or does not validate (torn, corrupt, from an unknown format). */
+  private storedHighlights(paperKey: string): Highlight[] | null {
+    assertSafeKey(paperKey);
+    const file = join(this.root, paperKey, HIGHLIGHTS_FILE);
+    const record = readRecord<Highlight[]>(file);
+    if (record === null) return existsSync(file) ? null : [];
+    if (!Array.isArray(record)) return null;
     try {
       return record.map((h) => validateHighlight(h, paperKey));
     } catch {
-      return [];
+      return null;
     }
   }
 
-  /** Look up a single highlight by id. */
+  /**
+   * The highlights a change is made to. A file that cannot be read is never taken for an empty
+   * one, which the change would then replace: like the conversation file, it refuses every change
+   * with a retryable STORAGE error and stays as it is.
+   */
+  private highlightsForWrite(paperKey: string): Highlight[] {
+    const stored = this.storedHighlights(paperKey);
+    if (stored === null) throw appError('STORAGE', '저장된 하이라이트와 메모를 읽지 못해 저장하지 않았습니다. 기존 기록 파일은 그대로 두었습니다.', true);
+    return stored;
+  }
+
+  /** Read all committed highlights for a paper. Torn or unreadable records read as [] (and are
+   * never written over: see highlightsForWrite). */
+  listHighlights(paperKey: string): Highlight[] {
+    return this.storedHighlights(paperKey) ?? [];
+  }
+
+  /** The highlights for the reader to see. A file that cannot be read is reported, as a
+   * retryable STORAGE error, rather than shown as a paper without records. */
+  readHighlights(paperKey: string): Highlight[] {
+    const stored = this.storedHighlights(paperKey);
+    if (stored === null) throw appError('STORAGE', '저장된 하이라이트와 메모를 읽지 못했습니다. 기록 파일은 지우지 않고 그대로 두었습니다.', true);
+    return stored;
+  }
+
+  /** Look up a single highlight by id, to change it (see highlightsForWrite). */
   getHighlight(paperKey: string, highlightId: string): Highlight | null {
-    return this.listHighlights(paperKey).find((h) => h.highlightId === highlightId) ?? null;
+    return this.highlightsForWrite(paperKey).find((h) => h.highlightId === highlightId) ?? null;
   }
 
   /** Remove one highlight. Returns true when a record was actually removed. */
   deleteHighlight(paperKey: string, highlightId: string): boolean {
     assertSafeKey(paperKey);
-    const existing = this.listHighlights(paperKey);
+    const existing = this.highlightsForWrite(paperKey);
     const next = existing.filter((h) => h.highlightId !== highlightId);
     if (next.length === existing.length) return false;
     const dir = this.ensurePaperDir(paperKey);

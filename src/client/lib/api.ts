@@ -230,6 +230,11 @@ export class ApiClient {
     return this.request<Highlight>(apiPath('/api/papers/:key/highlights', { key: paperKey }), { method: 'POST', body: input });
   }
 
+  /** The per-page records of one selection that crosses pages, stored together or not at all. */
+  createHighlights(paperKey: string, annotations: AnnotationInput[]): Promise<Highlight[]> {
+    return this.request<Highlight[]>(apiPath('/api/papers/:key/highlights/batch', { key: paperKey }), { method: 'POST', body: { annotations } });
+  }
+
   updateHighlight(paperKey: string, highlightId: string, input: { note?: string | null; color?: Highlight['color'] }): Promise<Highlight> {
     return this.request<Highlight>(apiPath('/api/papers/:key/highlights/:id', { key: paperKey, id: highlightId }), { method: 'PATCH', body: input });
   }

@@ -167,7 +167,8 @@ function ReplacementDialog({ paper, replacement, canTranslate, onConfirm, onCanc
         <h2 id={titleId}>{replacementTitle(paper)} 새로 번역</h2>
         <div className="replacement-dialog__copy">
           {replacement.oldTranslationExists ? <p><strong>기존 번역은 영구적으로 삭제됩니다.</strong></p> : null}
-          <p>원본 PDF, 하이라이트, 메모는 보존됩니다.</p>
+          <p><strong>한국어 쪽에 남긴 하이라이트·메모·필기도 모두 삭제됩니다.</strong></p>
+          <p>원본 PDF와 원본 쪽의 하이라이트·메모·필기는 그대로 남습니다.</p>
           <p>이 작업은 ChatGPT 구독 사용량을 사용합니다.</p>
           <p>선택한 모델: <strong>{replacement.modelId}</strong></p>
           <p>현재 번역 작업이 진행 중이어도 이 논문을 새로 번역할 수 있습니다.</p>

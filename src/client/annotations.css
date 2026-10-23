@@ -1,20 +1,12 @@
 .annotation-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:10px; padding:8px 16px; border-bottom:1px solid var(--line); background:var(--panel); font-size:12px; flex:none; }
 .annotation-toolbar button,.annotation-notebook button { font-size:12px; }
-.annotation-mode-group,.annotation-palette { display:flex; gap:4px; align-items:center; }
+.annotation-mode-group { display:flex; gap:2px; align-items:center; }
 .annotation-eraser-sizes { display:flex; gap:4px; align-items:center; }
 .annotation-eraser-sizes button { display:flex; align-items:center; justify-content:center; gap:5px; min-height:28px; }
 .annotation-eraser-sizes button[aria-pressed="true"] { background:var(--ink); color:var(--panel); border-color:var(--ink); }
 .annotation-eraser-sizes i { display:block; border:1px solid currentColor; border-radius:50%; flex:none; }
-.annotation-mode-group button[aria-pressed="true"],.annotation-toolbar > button[aria-pressed="true"],.annotation-notebook-filters button[aria-pressed="true"] { background:var(--ink); color:var(--panel); border-color:var(--ink); }
-.annotation-mode-hint { color:var(--muted); margin-left:auto; font-size:11px; }
-.annotation-swatch { width:20px; height:20px; padding:0; border:2px solid transparent; border-radius:50%; background:var(--annotation-color)!important; }
-.annotation-swatch[aria-pressed="true"] { border-color:var(--ink); outline:2px solid var(--panel); outline-offset:-4px; }
+.annotation-toolbar > button[aria-pressed="true"],.annotation-notebook-filters button[aria-pressed="true"] { background:var(--ink); color:var(--panel); border-color:var(--ink); }
 .annotation-yellow { --annotation-color:#f0d570; }.annotation-green { --annotation-color:#96ba9b; }.annotation-blue { --annotation-color:#92b3ce; }.annotation-pink { --annotation-color:#d7a0b3; }
-.annotation-selection-toolbar { position:fixed; display:flex; align-items:center; gap:3px; z-index:70; padding:6px; border:1px solid var(--line); border-radius:8px; background:var(--panel); box-shadow:0 3px 15px #0002; white-space:nowrap; }
-.annotation-selection-toolbar button { font-size:12px; padding:5px 8px; border-color:transparent; }
-.annotation-selection-toolbar button:hover { background:var(--bg); }
-.annotation-selection-preview { position:absolute; inset:0; z-index:5; pointer-events:none; }
-.annotation-selection-preview i { position:absolute; background:#92b3ce66; }
 .annotation-ink-layer { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; overflow:hidden; z-index:5; }
 .annotation-ink-layer path { fill:none; stroke-linecap:round; stroke-linejoin:round; }
 .annotation-ink-layer .saved-ink { pointer-events:stroke; cursor:pointer; }
@@ -26,5 +18,104 @@
 .annotation-notebook h2 { margin:0; font-size:15px; font-weight:600; }.annotation-notebook header span { color:var(--muted); font-size:11px; }
 .annotation-notebook-filters { padding:12px 16px; border-bottom:1px solid var(--line); }.annotation-notebook-filters input { width:100%; padding:7px 9px; border:1px solid var(--line); border-radius:4px; background:var(--panel); font-size:12px; }.annotation-notebook-filters > div { display:flex; gap:4px; margin-top:8px; }
 .annotation-notebook-list { overflow:auto; min-height:0; padding:0 16px 20px; }.annotation-entry { padding:16px 0; border-bottom:1px solid var(--line); }.annotation-entry-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }.annotation-entry-heading > button { border:0; padding:0; font-size:11px; color:var(--muted); }.annotation-entry-heading > span { font-size:10px; color:var(--muted); }.annotation-entry blockquote { margin:0 0 9px; border-left:3px solid var(--annotation-color); padding-left:10px; font-size:12px; line-height:1.7; overflow-wrap:anywhere; max-height:150px; overflow:auto; }.annotation-entry p { margin:7px 0; font-size:12px; white-space:pre-wrap; overflow-wrap:anywhere; }.annotation-entry small { display:block; color:var(--muted); font-size:11px; margin:8px 0; }.annotation-edit { background:none; padding:2px 0; border:0; color:var(--muted); }.annotation-empty { color:var(--muted); font-size:12px; line-height:1.8; padding:18px 0; }
-.highlight-popover .highlight-editor-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; font-size:12px; }.highlight-popover .highlight-editor-head button { border:0; padding:0 5px; }.highlight-popover .highlight-dirty { font-size:11px; color:var(--muted); margin:8px 0; }.highlight-popover .highlight-discard { padding:10px 0; color:var(--warn); font-size:12px; }.highlight-popover .highlight-discard button { margin-right:6px; margin-top:6px; }
-@media(max-width:700px) { .annotation-mode-hint { display:none; }.annotation-toolbar { padding:6px 10px; gap:8px; }.annotation-notebook { position:absolute; right:0; top:0; bottom:0; width:min(360px,100%); z-index:30; box-shadow:-5px 0 20px #0001; }.annotation-selection-toolbar { max-width:calc(100vw - 24px); flex-wrap:wrap; } }
+@media(max-width:700px) { .annotation-toolbar { padding:6px 10px; gap:8px; }.annotation-notebook { position:absolute; right:0; top:0; bottom:0; width:min(360px,100%); z-index:30; box-shadow:-5px 0 20px #0001; } }
+
+/* ---------------------------------------------------- tools, as Edge's reading bar has them
+   This file loads before styles.css: a rule here wins over a same-weight rule there only by
+   being more specific, hence the doubled classes on the button states. */
+.reader-annotations > .annotation-toolbar { flex:1 1 auto; min-width:0; }
+/* The tool buttons only: the colours in a tool's menu keep their own looks. */
+.annotation-mode-group > button,.annotation-tool > button,.annotation-tool__anchor > button { display:inline-flex; align-items:center; gap:6px; min-height:30px; padding:4px 9px; border:0; background:transparent; color:#1a1a1a; }
+.annotation-mode-group > button:hover:not(:disabled),.annotation-tool > button:hover:not(:disabled),.annotation-tool__anchor > button:hover:not(:disabled) { background:#f0f0f0; border-color:transparent; }
+.annotation-mode-group > button[aria-pressed="true"],.annotation-mode-group > button[aria-pressed="true"]:hover:not(:disabled),.annotation-tool.is-on { background:#e5e5e5; box-shadow:inset 0 -2px 0 #0072c9; }
+.annotation-tool { position:relative; display:inline-flex; align-items:stretch; border-radius:3px; }
+/* A tool's ▾ with its menu, which hangs from it: the highlighter's from its left end, the pen's from its right end. */
+.annotation-tool__anchor { position:relative; display:inline-flex; align-items:stretch; }
+.annotation-tool.is-on > button:hover:not(:disabled),.annotation-tool.is-on .annotation-tool__anchor > button:hover:not(:disabled) { background:#dadada; }
+.annotation-mode-group .annotation-tool__more { padding:4px 6px; }
+.annotation-tool__more svg { width:10px; height:6px; fill:none; stroke:currentColor; stroke-width:1.2; }
+.annotation-tool__icon { width:16px; height:16px; flex:none; fill:none; stroke:currentColor; stroke-width:1.1; stroke-linejoin:round; stroke-linecap:round; }
+.annotation-tool__icon .annotation-tool__ink { fill:var(--tool-color, transparent); }
+.annotation-undo { padding:3px 8px; font-size:11px; white-space:nowrap; }
+.annotation-toolbar .annotation-save-status { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.annotation-notebook-toggle { margin-left:auto; }
+
+/* The highlighter's and the pen's menus: a white panel right below the tool's ▾. */
+.annotation-tool-menu { position:absolute; top:100%; z-index:80; box-sizing:border-box; padding:16px; border-radius:4px; background:#fff; color:#1a1a1a; box-shadow:0 8px 24px rgba(0,0,0,.18),0 0 4px rgba(0,0,0,.12); text-align:left; cursor:default; }
+.annotation-tool-menu--highlighter { left:0; width:220px; }
+.annotation-tool-menu--pen { right:0; width:260px; }
+.annotation-tool-menu h3 { margin:0 0 12px; font-size:14px; font-weight:600; }
+.annotation-tool-menu h3 + .annotation-swatches { margin-bottom:8px; }
+.annotation-swatches { display:flex; flex-wrap:wrap; gap:12px; }
+.annotation-swatch { box-sizing:border-box; flex:none; width:28px; height:28px; padding:0; border:1px solid rgba(0,0,0,.28); border-radius:50%; background:var(--swatch); }
+button.annotation-swatch:hover:not(:disabled) { border-color:rgba(0,0,0,.6); }
+button.annotation-swatch[aria-pressed="true"],button.annotation-swatch[aria-pressed="true"]:hover:not(:disabled) { border:2px solid #0078d4; box-shadow:inset 0 0 0 2px #fff; }
+.annotation-tool-preview { display:block; width:188px; height:48px; margin:8px 0 12px; overflow:visible; }
+.annotation-tool-menu--pen .annotation-tool-preview { width:228px; }
+.annotation-tool-preview__line { fill:none; stroke-linecap:round; }
+.annotation-tool-menu--highlighter .annotation-tool-preview__line { stroke-linecap:butt; }
+.annotation-tool-menu input[type="range"] { display:block; width:210px; height:16px; margin:0 auto; background:transparent; appearance:none; -webkit-appearance:none; cursor:pointer; }
+/* The highlighter's menu is narrower than the pen's: its slider spans the menu, as its preview does. */
+.annotation-tool-menu--highlighter input[type="range"] { width:100%; }
+.annotation-tool-menu input[type="range"]::-webkit-slider-runnable-track { height:4px; border-radius:2px; background:linear-gradient(#767676,#767676) 0/var(--filled, 0%) 100% no-repeat,#bebebe; }
+.annotation-tool-menu input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; width:16px; height:16px; margin-top:-6px; border:0; border-radius:50%; background:#2b2b2b; }
+.annotation-tool-menu input[type="range"]::-moz-range-track { height:4px; border-radius:2px; background:#bebebe; }
+.annotation-tool-menu input[type="range"]::-moz-range-progress { height:4px; border-radius:2px; background:#767676; }
+.annotation-tool-menu input[type="range"]::-moz-range-thumb { width:16px; height:16px; border:0; border-radius:50%; background:#2b2b2b; }
+.annotation-tool-range-labels { display:flex; justify-content:space-between; margin-top:6px; font-size:12px; color:#424242; }
+
+/* What a finished selection offers. */
+.annotation-selection-menu { position:fixed; z-index:80; display:flex; flex-direction:column; min-width:180px; padding:4px; border-radius:4px; background:#fff; color:#1a1a1a; box-shadow:0 8px 24px rgba(0,0,0,.18),0 0 4px rgba(0,0,0,.12); font-size:13px; }
+.annotation-selection-menu > button { padding:7px 12px; border:0; border-radius:3px; background:transparent; text-align:left; white-space:nowrap; }
+.annotation-selection-menu > button:hover:not(:disabled) { background:#f0f0f0; border-color:transparent; }
+.annotation-selection-menu__colors { display:flex; align-items:center; gap:8px; padding:6px 12px 8px; border-bottom:1px solid #e5e5e5; margin-bottom:4px; }
+.annotation-selection-menu__colors > span { margin-right:auto; color:#424242; font-size:12px; }
+.annotation-selection-menu .annotation-swatch { width:20px; height:20px; }
+
+/* Highlights, the selection being made, and the records still on their way. The boxes let the
+   pointer through: a drag that starts on a highlight still selects, and a click is matched to
+   the boxes by the pane. */
+.highlight-layer .highlight-box { pointer-events:none; border-radius:0; mix-blend-mode:multiply; }
+.highlight-layer .highlight-box:focus-visible { outline:2px solid #0078d4; outline-offset:1px; }
+.highlight-layer .highlight-box.is-selection { background-color:#99c1da; }
+.highlight-layer .highlight-draft:not(.is-selection) { opacity:.75; }
+/* A thinner highlighter paints only this band along the bottom of the line's box. */
+.highlight-layer .highlight-band { position:absolute; left:0; right:0; bottom:0; pointer-events:none; }
+.pane-body[data-sweeping],.pane-body[data-sweeping] .textLayer span { user-select:none; -webkit-user-select:none; cursor:text; }
+.pane-body .textLayer ::selection { background:#99c1da; }
+.pane-body.is-highlighting .kr-text::selection,.pane-body.is-highlighting .kr-text ::selection { background:var(--highlighter); }
+
+/* Edge's memo mark: a small speech bubble over the start of the marked text. */
+.memo-icon { position:absolute; z-index:5; display:block; width:16px; height:16px; padding:1px; margin:0; border:0; border-radius:2px; background:transparent; transform:translate(-3px,-75%); line-height:0; }
+.memo-icon:hover:not(:disabled) { background:#fff8; border-color:transparent; }
+.memo-icon svg { display:block; }
+
+/* A Korean page that still shows the original: no translation to write on yet. */
+.annotation-unavailable-page { position:absolute; inset:0; z-index:6; display:flex; align-items:center; justify-content:center; background:rgba(255,255,255,.55); cursor:not-allowed; }
+.annotation-unavailable-page p { margin:0; padding:8px 14px; border-radius:4px; background:#fff; color:#424242; font-size:13px; box-shadow:0 2px 8px rgba(0,0,0,.14); }
+
+/* The memo card: a yellow note beside the text it is about. */
+.memo-card { position:fixed; z-index:85; box-sizing:border-box; display:flex; flex-direction:column; width:320px; min-height:192px; padding:8px 16px 12px; border:1px solid #fff386; border-radius:2px; background:#fff9c7; color:#3d3a10; box-shadow:0 8px 24px rgba(0,0,0,.16),0 0 4px rgba(0,0,0,.1); font-size:15px; }
+.memo-card:not(.is-editing) { min-height:179px; }
+.memo-card__head { display:flex; justify-content:flex-end; gap:4px; min-height:28px; }
+.memo-card__head button,.memo-card__done { display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; padding:0; border:0; border-radius:2px; background:transparent; color:#1a1a1a; }
+.memo-card__head button:hover:not(:disabled),.memo-card__done:hover:not(:disabled) { background:#0000000f; border-color:transparent; }
+.memo-card__head svg,.memo-card__done svg { fill:currentColor; stroke:currentColor; stroke-width:0; }
+.memo-card__close svg path,.memo-card__done svg path { fill:none; stroke-width:1.3; stroke-linecap:round; stroke-linejoin:round; }
+.memo-card textarea { flex:1 1 auto; min-height:110px; margin:0; padding:0; border:0; background:transparent; color:#3d3a10; font-size:18px; line-height:1.5; resize:none; outline:none; }
+.memo-card textarea::placeholder { color:#7c731d; opacity:1; }
+.memo-card textarea[readonly] { opacity:.7; }
+.memo-card__text { flex:1 1 auto; margin:4px 0 0; font-size:18px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; max-height:320px; overflow:auto; }
+.memo-card__status { margin:6px 0 0; color:#7c731d; font-size:12px; }
+.memo-card [role="alert"] { margin:6px 0 0; color:#a4262c; font-size:12px; }
+.memo-card__done { align-self:flex-end; color:#5c5714; }
+.memo-card__done:disabled { opacity:1; color:#bfb98b; cursor:default; }
+.memo-card__menu { position:absolute; top:36px; right:12px; z-index:1; display:flex; flex-direction:column; min-width:150px; padding:4px; border-radius:4px; background:#fff; color:#1a1a1a; box-shadow:0 8px 24px rgba(0,0,0,.18),0 0 4px rgba(0,0,0,.12); font-size:13px; }
+.memo-card__menu > button { padding:7px 12px; border:0; border-radius:3px; background:transparent; text-align:left; white-space:nowrap; }
+.memo-card__menu > button:hover:not(:disabled) { background:#f0f0f0; border-color:transparent; }
+.memo-card__colors { display:flex; gap:8px; padding:8px 12px 6px; border-top:1px solid #e5e5e5; margin-top:4px; }
+.memo-card__colors .annotation-swatch { width:20px; height:20px; }
+.memo-card__discard { margin-top:8px; padding:8px 0 0; border-top:1px solid #f1e48a; font-size:13px; }
+.memo-card__discard div { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+.memo-card__discard button { padding:3px 8px; font-size:12px; }
+@media(max-width:700px) { .memo-card { width:min(320px,calc(100vw - 16px)); } }
