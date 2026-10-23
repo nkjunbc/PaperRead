@@ -167,7 +167,7 @@ export function MemoCardView({ card, record, onText, onSave, onEdit, onClose, on
       <div className="memo-card__head">
         {record !== null && !ink ? (
           <button type="button" className="memo-card__more" aria-label="메모 메뉴" aria-haspopup="menu" aria-expanded={menuOpen} disabled={card.saving} onClick={() => setMenuOpen((open) => !open)}>
-            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="3" cy="8" r="1.2" /><circle cx="8" cy="8" r="1.2" /><circle cx="13" cy="8" r="1.2" /></svg>
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="4" cy="8" r="0.9" /><circle cx="8" cy="8" r="0.9" /><circle cx="12" cy="8" r="0.9" /></svg>
           </button>
         ) : null}
         <button type="button" className="memo-card__close" aria-label={ink ? '닫기' : '메모 닫기'} disabled={card.saving} onClick={close}>

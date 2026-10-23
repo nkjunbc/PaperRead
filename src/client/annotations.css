@@ -1,22 +1,20 @@
-.annotation-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:10px; padding:8px 16px; border-bottom:1px solid var(--line); background:var(--panel); font-size:12px; flex:none; }
-.annotation-toolbar button,.annotation-notebook button { font-size:12px; }
+.annotation-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:8px 16px; border-bottom:1px solid var(--line); background:var(--panel); font-size:13px; flex:none; }
+.annotation-toolbar button,.annotation-notebook button { font-size:13px; }
 .annotation-mode-group { display:flex; gap:2px; align-items:center; }
 .annotation-eraser-sizes { display:flex; gap:4px; align-items:center; }
-.annotation-eraser-sizes button { display:flex; align-items:center; justify-content:center; gap:5px; min-height:28px; }
-.annotation-eraser-sizes button[aria-pressed="true"] { background:var(--ink); color:var(--panel); border-color:var(--ink); }
+.annotation-eraser-sizes button { display:flex; align-items:center; justify-content:center; gap:6px; }
 .annotation-eraser-sizes i { display:block; border:1px solid currentColor; border-radius:50%; flex:none; }
-.annotation-toolbar > button[aria-pressed="true"],.annotation-notebook-filters button[aria-pressed="true"] { background:var(--ink); color:var(--panel); border-color:var(--ink); }
 .annotation-yellow { --annotation-color:#f0d570; }.annotation-green { --annotation-color:#96ba9b; }.annotation-blue { --annotation-color:#92b3ce; }.annotation-pink { --annotation-color:#d7a0b3; }
 .annotation-ink-layer { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; overflow:hidden; z-index:5; }
 .annotation-ink-layer path { fill:none; stroke-linecap:round; stroke-linejoin:round; }
 .annotation-ink-layer .saved-ink { pointer-events:stroke; cursor:pointer; }
 .annotation-pen-surface { position:absolute; inset:0; z-index:6; cursor:crosshair; touch-action:none; user-select:none; }
 .annotation-pen-surface[aria-disabled="true"] { cursor:wait; }
-.annotation-eraser-surface { cursor:none; }.annotation-eraser-cursor { position:absolute; pointer-events:none; width:24px; height:24px; border:1.5px solid #6b6b66; box-shadow:0 0 0 1px #fff9; border-radius:50%; background:#ffffff55; transform:translate(-50%,-50%); }
+.annotation-eraser-surface { cursor:none; }.annotation-eraser-cursor { position:absolute; pointer-events:none; width:24px; height:24px; border:1.5px solid var(--muted); box-shadow:0 0 0 1px #fff9; border-radius:50%; background:#ffffff55; transform:translate(-50%,-50%); }
 .annotation-notebook { width:330px; min-width:280px; max-width:100%; display:flex; flex-direction:column; background:var(--panel); border-left:1px solid var(--line); min-height:0; }
-.annotation-notebook header { display:flex; align-items:center; justify-content:space-between; padding:14px 16px; border-bottom:1px solid var(--line); }
+.annotation-notebook header { display:flex; align-items:center; justify-content:space-between; padding:12px 12px 12px 16px; border-bottom:1px solid var(--line); }
 .annotation-notebook h2 { margin:0; font-size:15px; font-weight:600; }.annotation-notebook header span { color:var(--muted); font-size:11px; }
-.annotation-notebook-filters { padding:12px 16px; border-bottom:1px solid var(--line); }.annotation-notebook-filters input { width:100%; padding:7px 9px; border:1px solid var(--line); border-radius:4px; background:var(--panel); font-size:12px; }.annotation-notebook-filters > div { display:flex; gap:4px; margin-top:8px; }
+.annotation-notebook-filters { padding:12px 16px; border-bottom:1px solid var(--line); }.annotation-notebook-filters input { width:100%; height:32px; padding:0 10px; border:1px solid var(--line-strong); border-radius:4px; background:var(--panel); font-size:13px; }.annotation-notebook-filters > div { display:flex; gap:2px; margin-top:8px; }
 .annotation-notebook-list { overflow:auto; min-height:0; padding:4px 8px 20px; }
 .annotation-empty { color:var(--muted); font-size:12px; line-height:1.8; padding:18px 8px; }
 
@@ -27,11 +25,11 @@
 .annotation-entry__go:hover:not(:disabled) { background:#f0f0f0; border-color:transparent; }
 .annotation-entry-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px; }
 .annotation-entry__where { font-size:12px; font-weight:600; color:#424242; }
-.annotation-entry__kind { font-size:11px; color:#6b6b66; }
+.annotation-entry__kind { font-size:11px; color:var(--muted); }
 .annotation-entry__quote { display:block; border-left:3px solid var(--annotation-color); padding-left:10px; font-size:12px; line-height:1.7; overflow-wrap:anywhere; max-height:150px; overflow:auto; }
 /* A memo looks like its card: a yellow note. */
 .annotation-entry__note { display:block; margin-top:8px; padding:6px 10px; border:1px solid #fff386; border-radius:2px; background:#fff9c7; color:#3d3a10; font-size:12px; line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; }
-.annotation-entry small { display:block; margin:0 8px 4px; color:#6b6b66; font-size:11px; }
+.annotation-entry small { display:block; margin:0 8px 4px; color:var(--muted); font-size:11px; }
 .annotation-entry__error { margin:2px 8px 4px; color:#a4262c; font-size:11px; }
 .annotation-entry__actions { display:flex; justify-content:flex-end; gap:2px; padding:0 4px; }
 .annotation-edit,.annotation-delete { padding:3px 8px; border:0; border-radius:3px; background:transparent; color:#424242; }
@@ -39,32 +37,40 @@
 .annotation-delete:hover:not(:disabled) { color:#a4262c; }
 .annotation-lost { margin-top:20px; }
 .annotation-lost h3 { margin:0 8px 4px; font-size:13px; font-weight:600; color:#1a1a1a; }
-.annotation-lost h3 span { margin-left:4px; color:#6b6b66; font-weight:400; }
-.annotation-lost > p { margin:0 8px 6px; color:#6b6b66; font-size:11px; line-height:1.6; }
+.annotation-lost h3 span { margin-left:4px; color:var(--muted); font-weight:400; }
+.annotation-lost > p { margin:0 8px 6px; color:var(--muted); font-size:11px; line-height:1.6; }
 @media(max-width:700px) { .annotation-toolbar { padding:6px 10px; gap:8px; }.annotation-notebook { position:absolute; right:0; top:0; bottom:0; width:min(360px,100%); z-index:30; box-shadow:-5px 0 20px #0001; } }
 
 /* ---------------------------------------------------- tools, as Edge's reading bar has them
    This file loads before styles.css: a rule here wins over a same-weight rule there only by
    being more specific, hence the doubled classes on the button states. */
 .reader-annotations > .annotation-toolbar { flex:1 1 auto; min-width:0; }
-/* The tool buttons only: the colours in a tool's menu keep their own looks. */
-.annotation-mode-group > button,.annotation-tool > button,.annotation-tool__anchor > button { display:inline-flex; align-items:center; gap:6px; min-height:30px; padding:4px 9px; border:0; background:transparent; color:#1a1a1a; }
-.annotation-mode-group > button:hover:not(:disabled),.annotation-tool > button:hover:not(:disabled),.annotation-tool__anchor > button:hover:not(:disabled) { background:#f0f0f0; border-color:transparent; }
-.annotation-mode-group > button[aria-pressed="true"],.annotation-mode-group > button[aria-pressed="true"]:hover:not(:disabled),.annotation-tool.is-on { background:#e5e5e5; box-shadow:inset 0 -2px 0 #0072c9; }
-.annotation-tool { position:relative; display:inline-flex; align-items:stretch; border-radius:3px; }
+/* Every button of the bar, the memo list's own close and filters among them: no frame, 32px
+   high, #eaeaea under the pointer, #efefef pressed. The colours in a tool's menu keep their own looks. */
+.annotation-mode-group > button,.annotation-tool > button,.annotation-tool__anchor > button,.annotation-eraser-sizes button,.annotation-toolbar > button,.annotation-notebook header button,.annotation-notebook-filters button { display:inline-flex; align-items:center; gap:6px; min-height:32px; padding:0 10px; border:0; border-radius:2px; background:transparent; color:var(--ink); white-space:nowrap; }
+.annotation-mode-group > button:hover:not(:disabled),.annotation-tool > button:hover:not(:disabled),.annotation-tool__anchor > button:hover:not(:disabled),.annotation-eraser-sizes button:hover:not(:disabled),.annotation-toolbar > button:hover:not(:disabled),.annotation-notebook header button:hover:not(:disabled),.annotation-notebook-filters button:hover:not(:disabled) { background:var(--tool-hover); border-color:transparent; }
+.annotation-mode-group > button:active:not(:disabled),.annotation-tool > button:active:not(:disabled),.annotation-tool__anchor > button:active:not(:disabled),.annotation-eraser-sizes button:active:not(:disabled),.annotation-toolbar > button:active:not(:disabled),.annotation-notebook header button:active:not(:disabled),.annotation-notebook-filters button:active:not(:disabled) { background:var(--tool-down); }
+/* The tool that is on, and any other button of the bar that is pressed: #e5e5e5 with the blue bar along its foot. */
+.annotation-mode-group > button[aria-pressed="true"],.annotation-mode-group > button[aria-pressed="true"]:hover:not(:disabled),.annotation-tool.is-on,
+.annotation-eraser-sizes button[aria-pressed="true"],.annotation-eraser-sizes button[aria-pressed="true"]:hover:not(:disabled),
+.annotation-toolbar > button[aria-pressed="true"],.annotation-toolbar > button[aria-pressed="true"]:hover:not(:disabled),
+.annotation-notebook-filters button[aria-pressed="true"],.annotation-notebook-filters button[aria-pressed="true"]:hover:not(:disabled) { background:var(--tool-on); box-shadow:var(--tool-on-bar); }
+.annotation-notebook header button { justify-content:center; width:32px; height:32px; padding:0; }
+/* A rule between the tools and what follows them, as between Edge's groups. */
+.annotation-mode-group::after { content:''; flex:none; width:1px; height:16px; margin-left:6px; background:var(--tool-rule); }
+.annotation-tool { position:relative; display:inline-flex; align-items:stretch; border-radius:2px; }
 /* A tool's ▾ with its menu, which hangs from it: the highlighter's from its left end, the pen's from its right end. */
 .annotation-tool__anchor { position:relative; display:inline-flex; align-items:stretch; }
 .annotation-tool.is-on > button:hover:not(:disabled),.annotation-tool.is-on .annotation-tool__anchor > button:hover:not(:disabled) { background:#dadada; }
-.annotation-mode-group .annotation-tool__more { padding:4px 6px; }
-.annotation-tool__more svg { width:10px; height:6px; fill:none; stroke:currentColor; stroke-width:1.2; }
-.annotation-tool__icon { width:16px; height:16px; flex:none; fill:none; stroke:currentColor; stroke-width:1.1; stroke-linejoin:round; stroke-linecap:round; }
+.annotation-mode-group .annotation-tool__more { justify-content:center; width:28px; padding:0; }
+.annotation-tool__more svg { width:10px; height:6px; fill:none; stroke:currentColor; stroke-width:1; }
+.annotation-tool__icon { width:16px; height:16px; flex:none; fill:none; stroke:currentColor; stroke-width:1; stroke-linejoin:round; stroke-linecap:round; }
 .annotation-tool__icon .annotation-tool__ink { fill:var(--tool-color, transparent); }
-.annotation-undo { padding:3px 8px; font-size:11px; white-space:nowrap; }
-.annotation-toolbar .annotation-save-status { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.annotation-toolbar .annotation-save-status { min-width:0; overflow:hidden; color:var(--muted); font-size:12px; text-overflow:ellipsis; }
 .annotation-notebook-toggle { margin-left:auto; }
 
 /* The highlighter's and the pen's menus: a white panel right below the tool's ▾. */
-.annotation-tool-menu { position:absolute; top:100%; z-index:80; box-sizing:border-box; padding:16px; border-radius:4px; background:#fff; color:#1a1a1a; box-shadow:0 8px 24px rgba(0,0,0,.18),0 0 4px rgba(0,0,0,.12); text-align:left; cursor:default; }
+.annotation-tool-menu { position:absolute; top:100%; z-index:80; box-sizing:border-box; padding:16px; border-radius:4px; background:#fff; color:#2b2b2b; box-shadow:var(--menu-shadow); text-align:left; cursor:default; }
 .annotation-tool-menu--highlighter { left:0; width:220px; }
 .annotation-tool-menu--pen { right:0; width:260px; }
 .annotation-tool-menu h3 { margin:0 0 12px; font-size:14px; font-weight:600; }
@@ -85,14 +91,16 @@ button.annotation-swatch[aria-pressed="true"],button.annotation-swatch[aria-pres
 .annotation-tool-menu input[type="range"]::-moz-range-track { height:4px; border-radius:2px; background:#bebebe; }
 .annotation-tool-menu input[type="range"]::-moz-range-progress { height:4px; border-radius:2px; background:#767676; }
 .annotation-tool-menu input[type="range"]::-moz-range-thumb { width:16px; height:16px; border:0; border-radius:50%; background:#2b2b2b; }
-.annotation-tool-range-labels { display:flex; justify-content:space-between; margin-top:6px; font-size:12px; color:#424242; }
+.annotation-tool-range-labels { display:flex; justify-content:space-between; margin-top:6px; font-size:11px; color:#2b2b2b; }
 
-/* What a finished selection offers. */
-.annotation-selection-menu { position:fixed; z-index:80; display:flex; flex-direction:column; min-width:180px; padding:4px; border-radius:4px; background:#fff; color:#1a1a1a; box-shadow:0 8px 24px rgba(0,0,0,.18),0 0 4px rgba(0,0,0,.12); font-size:13px; }
-.annotation-selection-menu > button { padding:7px 12px; border:0; border-radius:3px; background:transparent; text-align:left; white-space:nowrap; }
-.annotation-selection-menu > button:hover:not(:disabled) { background:#f0f0f0; border-color:transparent; }
-.annotation-selection-menu__colors { display:flex; align-items:center; gap:8px; padding:6px 12px 8px; border-bottom:1px solid #e5e5e5; margin-bottom:4px; }
-.annotation-selection-menu__colors > span { margin-right:auto; color:#424242; font-size:12px; }
+/* What a finished selection offers, set as Edge's context menu: a white panel with rounded
+   corners and 8px above and below, 32px items whose 16px icons and words stand in two columns,
+   and a rule under the colours. SelectionMenu keeps it within 240x182px of the window's edges. */
+.annotation-selection-menu { position:fixed; z-index:80; display:flex; flex-direction:column; min-width:200px; padding:8px; border-radius:16px; background:#fff; color:var(--menu-text); box-shadow:var(--menu-shadow); font-size:14px; }
+.annotation-selection-menu > button { display:flex; align-items:center; gap:10px; min-height:32px; padding:0 12px 0 13px; border:0; border-radius:4px; background:transparent; text-align:left; white-space:nowrap; }
+.annotation-selection-menu > button:hover:not(:disabled) { background:var(--menu-hover); border-color:transparent; }
+.annotation-selection-menu__colors { display:flex; align-items:center; gap:6px; min-height:32px; padding:0 10px 8px 13px; border-bottom:1px solid #ebebeb; margin-bottom:8px; }
+.annotation-selection-menu__colors > span { display:flex; align-items:center; gap:10px; margin-right:auto; padding-right:8px; font-size:13px; white-space:nowrap; }
 .annotation-selection-menu .annotation-swatch { width:20px; height:20px; }
 
 /* Highlights, the selection being made, and the records still on their way. The boxes let the
@@ -120,26 +128,30 @@ button.annotation-swatch[aria-pressed="true"],button.annotation-swatch[aria-pres
 .annotation-unavailable-page { position:absolute; inset:0; z-index:6; display:flex; align-items:center; justify-content:center; background:rgba(255,255,255,.55); cursor:not-allowed; }
 .annotation-unavailable-page p { margin:0; padding:8px 14px; border-radius:4px; background:#fff; color:#424242; font-size:13px; box-shadow:0 2px 8px rgba(0,0,0,.14); }
 
-/* The memo card: a yellow note beside the text it is about. */
-.memo-card { position:fixed; z-index:85; box-sizing:border-box; display:flex; flex-direction:column; width:320px; min-height:192px; padding:8px 16px 12px; border:1px solid #fff386; border-radius:2px; background:#fff9c7; color:#3d3a10; box-shadow:0 8px 24px rgba(0,0,0,.16),0 0 4px rgba(0,0,0,.1); font-size:15px; }
+/* The memo card: a yellow note beside the text it is about, as Edge's: 24px buttons drawn in
+   #2b2600 that turn #fff69e under the pointer and while the menu is open, 14px words. */
+.memo-card { position:fixed; z-index:85; box-sizing:border-box; display:flex; flex-direction:column; width:320px; min-height:192px; padding:8px 12px 12px; border:1px solid #fff386; border-radius:2px; background:#fff9c7; color:#2b2600; box-shadow:0 10px 28px rgba(0,0,0,.2),0 0 6px rgba(0,0,0,.1); font-size:14px; }
 .memo-card:not(.is-editing) { min-height:179px; }
-.memo-card__head { display:flex; justify-content:flex-end; gap:4px; min-height:28px; }
-.memo-card__head button,.memo-card__done { display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; padding:0; border:0; border-radius:2px; background:transparent; color:#1a1a1a; }
-.memo-card__head button:hover:not(:disabled),.memo-card__done:hover:not(:disabled) { background:#0000000f; border-color:transparent; }
+.memo-card__head { display:flex; justify-content:flex-end; gap:4px; min-height:24px; margin-bottom:6px; }
+.memo-card__head button,.memo-card__done { display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; padding:0; border:0; border-radius:2px; background:transparent; color:#2b2600; }
+.memo-card__head button:hover:not(:disabled),.memo-card__head button[aria-expanded="true"],.memo-card__done:hover:not(:disabled) { background:#fff69e; border-color:transparent; }
 .memo-card__head svg,.memo-card__done svg { fill:currentColor; stroke:currentColor; stroke-width:0; }
-.memo-card__close svg path,.memo-card__done svg path { fill:none; stroke-width:1.3; stroke-linecap:round; stroke-linejoin:round; }
-.memo-card textarea { flex:1 1 auto; min-height:110px; margin:0; padding:0; border:0; background:transparent; color:#3d3a10; font-size:18px; line-height:1.5; resize:none; outline:none; }
+.memo-card__close svg path,.memo-card__done svg path { fill:none; stroke-width:1.2; stroke-linecap:round; stroke-linejoin:round; }
+.memo-card textarea { flex:1 1 auto; min-height:110px; margin:0; padding:0; border:0; background:transparent; color:#2b2600; font-size:14px; line-height:1.5; resize:none; outline:none; }
+/* As in Edge, the caret alone shows the memo has the keyboard. */
+.memo-card textarea:focus-visible { outline:none; }
 .memo-card textarea::placeholder { color:#7c731d; opacity:1; }
 .memo-card textarea[readonly] { opacity:.7; }
-.memo-card__text { flex:1 1 auto; margin:4px 0 0; font-size:18px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; max-height:320px; overflow:auto; }
+.memo-card__text { flex:1 1 auto; margin:0; font-size:14px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; max-height:320px; overflow:auto; }
 .memo-card__status { margin:6px 0 0; color:#7c731d; font-size:12px; }
 .memo-card [role="alert"] { margin:6px 0 0; color:#a4262c; font-size:12px; }
-.memo-card__done { align-self:flex-end; color:#5c5714; }
+.memo-card__done { align-self:flex-end; }
 .memo-card__done:disabled { opacity:1; color:#bfb98b; cursor:default; }
-.memo-card__menu { position:absolute; top:36px; right:12px; z-index:1; display:flex; flex-direction:column; min-width:150px; padding:4px; border-radius:4px; background:#fff; color:#1a1a1a; box-shadow:0 8px 24px rgba(0,0,0,.18),0 0 4px rgba(0,0,0,.12); font-size:13px; }
-.memo-card__menu > button { padding:7px 12px; border:0; border-radius:3px; background:transparent; text-align:left; white-space:nowrap; }
-.memo-card__menu > button:hover:not(:disabled) { background:#f0f0f0; border-color:transparent; }
-.memo-card__colors { display:flex; gap:8px; padding:8px 12px 6px; border-top:1px solid #e5e5e5; margin-top:4px; }
+/* The card's menu hangs from its ... button and opens leftward, set as the selection's menu is. */
+.memo-card__menu { position:absolute; top:34px; right:40px; z-index:1; display:flex; flex-direction:column; min-width:160px; padding:8px; border-radius:16px; background:#fff; color:var(--menu-text); box-shadow:var(--menu-shadow); font-size:14px; }
+.memo-card__menu > button { display:flex; align-items:center; min-height:32px; padding:0 12px; border:0; border-radius:4px; background:transparent; text-align:left; white-space:nowrap; }
+.memo-card__menu > button:hover:not(:disabled) { background:var(--menu-hover); border-color:transparent; }
+.memo-card__colors { display:flex; gap:8px; padding:8px 12px 0; border-top:1px solid #ebebeb; margin-top:8px; }
 .memo-card__colors .annotation-swatch { width:20px; height:20px; }
 .memo-card__discard { margin-top:8px; padding:8px 0 0; border-top:1px solid #f1e48a; font-size:13px; }
 .memo-card__discard div { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }

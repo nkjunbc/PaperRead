@@ -5,6 +5,7 @@ import { AnnotationNotebook, AnnotationToolbar, useKoreanLayouts } from './compo
 import { ModelPreferences } from './components/ModelPreferences';
 import { PanelResizeHandle } from './components/PanelResizeHandle';
 import { ChatBoundary } from './components/ChatBoundary';
+import { IconAttach, IconChevronDown, IconChevronUp, IconFitWidth, IconLibrary, IconMinus, IconPlus } from './components/ChatIcons';
 import type { ChatQuote } from './components/ChatPanel';
 import { FindBar, revealTop } from './components/FindBar';
 import { MemoCardView } from './components/MemoCard';
@@ -1193,12 +1194,14 @@ export function App(): JSX.Element {
             }}
           />
           <button type="button" disabled={busy || !client.canMutate} onClick={() => fileInputRef.current?.click()}>
+            <IconAttach />
             {uploading ? 'PDF 여는 중…' : 'PDF 첨부'}
           </button>
         </form>
         <div className="topbar__right">
           {paperKey !== null ? (
             <button type="button" onClick={leaveReader}>
+              <IconLibrary />
               보관함
             </button>
           ) : null}
@@ -1378,28 +1381,28 @@ export function App(): JSX.Element {
                 <div className="pane-head pane-head--source">
                   <span className="pane-title">원본</span>
                   <div className="pane-tools" role="group" aria-label="확대 조절">
-                    <button type="button" onClick={() => changeZoom(-CONTROL_LIMITS.zoom.step)} aria-label="축소">
-                      축소 −
+                    <button type="button" onClick={() => changeZoom(-CONTROL_LIMITS.zoom.step)} aria-label="축소" title="축소">
+                      <IconMinus />
                     </button>
                     <span data-testid="zoom" className="pane-readout">
                       {Math.round(zoom * 100)}%
                     </span>
-                    <button type="button" onClick={() => changeZoom(CONTROL_LIMITS.zoom.step)} aria-label="확대">
-                      확대 +
+                    <button type="button" onClick={() => changeZoom(CONTROL_LIMITS.zoom.step)} aria-label="확대" title="확대">
+                      <IconPlus size={16} thin />
                     </button>
-                    <button type="button" onClick={fitWidth} aria-label="폭 맞춤">
-                      폭 맞춤
+                    <button type="button" onClick={fitWidth} aria-label="폭 맞춤" title="폭 맞춤">
+                      <IconFitWidth />
                     </button>
                   </div>
                   <div className="pane-tools" role="group" aria-label="쪽 이동">
-                    <button type="button" onClick={() => goToPage(nextPage(currentPage, -1, pageCount))} aria-label="이전 쪽">
-                      이전 쪽
+                    <button type="button" onClick={() => goToPage(nextPage(currentPage, -1, pageCount))} aria-label="이전 쪽" title="이전 쪽">
+                      <IconChevronUp />
                     </button>
                     <span data-testid="page" className="pane-readout">
                       {currentPage} / {pageCount || '?'}
                     </span>
-                    <button type="button" onClick={() => goToPage(nextPage(currentPage, 1, pageCount))} aria-label="다음 쪽">
-                      다음 쪽
+                    <button type="button" onClick={() => goToPage(nextPage(currentPage, 1, pageCount))} aria-label="다음 쪽" title="다음 쪽">
+                      <IconChevronDown />
                     </button>
                   </div>
                   <span className="pane-hint">드래그: 하이라이트 · 클릭: 한국어 같은 쪽으로</span>

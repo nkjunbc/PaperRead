@@ -5,6 +5,7 @@ import type { RecordBusy } from '../lib/annotation-session';
 import { HIGHLIGHT_COLORS, HIGHLIGHT_FILLS, HIGHLIGHT_LABELS, INK_COLORS, INK_LABELS, inkPixels } from './HighlightLayer';
 import { ERASER_RADII, ERASER_SIZE_LABELS, type EraserSize } from '../lib/eraser';
 import { keepsKeysToItself } from '../lib/find';
+import { IconClose, IconComment, IconCopy, IconMemoList, IconQuote } from './ChatIcons';
 import '../annotations.css';
 
 /** A Letter page drawn at 100%: the pen preview shows a stroke as thick as it is drawn there. */
@@ -219,7 +220,7 @@ export function AnnotationToolbar(props: AnnotationToolbarProps): JSX.Element {
     </div> : null}
     {props.erasedCount > 0 ? <button type="button" className="annotation-undo" disabled={props.restoring} onClick={props.onUndoErase}>{props.restoring ? '되돌리는 중…' : '지운 필기 되돌리기'}</button> : null}
     <span className="annotation-save-status" role="status">{props.notice || HINTS[mode]}</span>
-    <button type="button" className="annotation-notebook-toggle" aria-pressed={notebookOpen} onClick={onToggleNotebook}>메모 모음</button>
+    <button type="button" className="annotation-notebook-toggle" aria-pressed={notebookOpen} onClick={onToggleNotebook}><IconMemoList />메모 모음</button>
   </div>;
 }
 
@@ -244,12 +245,12 @@ export function SelectionMenu({ text, position, onHighlight, onMemo, onAsk, onCl
   return <div ref={root} role="toolbar" aria-label="선택한 부분" aria-orientation="vertical" className="annotation-selection-menu" style={{ left, top }}
     onMouseDown={(event) => event.preventDefault()}>
     <div className="annotation-selection-menu__colors" role="group" aria-label="하이라이트">
-      <span aria-hidden="true">하이라이트</span>
+      <span aria-hidden="true">{TOOL_ICONS.highlight}하이라이트</span>
       {HIGHLIGHT_COLORS.map((color) => <button key={color} type="button" className="annotation-swatch" aria-label={`${HIGHLIGHT_LABELS[color]} 하이라이트`} style={{ '--swatch': HIGHLIGHT_FILLS[color] } as CSSProperties} onClick={() => onHighlight(color)} />)}
     </div>
-    <button type="button" onClick={onMemo}>메모 달기</button>
-    {onAsk !== undefined ? <button type="button" onClick={onAsk}>질문에 인용</button> : null}
-    <button type="button" onClick={() => { void navigator.clipboard.writeText(text).then(() => setCopied(true), () => setCopied(false)); }}>{copied ? '복사됨' : '복사'}</button>
+    <button type="button" onClick={onMemo}><IconComment />메모 달기</button>
+    {onAsk !== undefined ? <button type="button" onClick={onAsk}><IconQuote size={16} thin />질문에 인용</button> : null}
+    <button type="button" onClick={() => { void navigator.clipboard.writeText(text).then(() => setCopied(true), () => setCopied(false)); }}><IconCopy size={16} thin />{copied ? '복사됨' : '복사'}</button>
   </div>;
 }
 
@@ -352,7 +353,7 @@ export function AnnotationNotebook({ highlights, onOpen, onClose, onNavigate, on
   const total = list.entries.length + list.lost.length;
   const item = (entry: MemoListEntry) => <MemoListItem key={entry.record.highlightId} entry={entry} busy={busy[entry.record.highlightId] ?? null} error={deleteErrors[entry.record.highlightId] ?? null} onNavigate={onNavigate} onOpen={onOpen} onDelete={onDelete} />;
   return <aside className="annotation-notebook" aria-label="메모 모음" onKeyDown={(e) => { if(e.key === 'Escape' && !e.nativeEvent.isComposing) {e.preventDefault();e.stopPropagation();onClose();} }}>
-    <header><div><h2>메모 모음</h2><span>{total}개 기록</span></div><button type="button" aria-label="메모 모음 닫기" onClick={onClose}>×</button></header>
+    <header><div><h2>메모 모음</h2><span>{total}개 기록</span></div><button type="button" aria-label="메모 모음 닫기" onClick={onClose}><IconClose /></button></header>
     <div className="annotation-notebook-filters">
       <input type="search" aria-label="메모 검색" placeholder="선택한 글·메모 검색" value={query} onChange={(e) => setQuery(e.target.value)} />
       <div role="group" aria-label="기록 지면"><button type="button" aria-pressed={surface === 'all'} onClick={() => setSurface('all')}>전체</button><button type="button" aria-pressed={surface === 'original'} onClick={() => setSurface('original')}>원문</button><button type="button" aria-pressed={surface === 'translation'} onClick={() => setSurface('translation')}>한국어</button></div>

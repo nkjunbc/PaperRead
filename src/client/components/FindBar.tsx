@@ -121,7 +121,7 @@ export function revealTop(body: HTMLElement, target: Pick<Range | Element, 'getB
 
 function Chevron({ up }: { up: boolean }): JSX.Element {
   return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
       <path d={up ? 'M2 11.5l6-7 6 7' : 'M2 4.5l6 7 6-7'} />
     </svg>
   );
@@ -129,7 +129,7 @@ function Chevron({ up }: { up: boolean }): JSX.Element {
 
 function Cross(): JSX.Element {
   return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" aria-hidden="true" focusable="false">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" aria-hidden="true" focusable="false">
       <path d="M2 2l12 12M14 2 2 14" />
     </svg>
   );

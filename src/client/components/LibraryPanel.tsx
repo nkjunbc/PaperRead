@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type JSX } from 'react';
 import type { Paper } from '../../shared/contracts';
 import { paperTitle } from '../lib/paper';
+import { IconMore } from './ChatIcons';
 
 export interface LibraryPanelProps {
   papers: readonly Paper[];
@@ -205,7 +206,7 @@ export function LibraryPanel({
                     aria-expanded={menuOpen}
                     onClick={() => setMenuKey(menuOpen ? null : paper.paperKey)}
                   >
-                    …
+                    <IconMore />
                   </button>
                   {menuOpen ? (
                     <div className="library-card__menu" role="menu">

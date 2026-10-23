@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState, type JSX, type ReactNo
 import type { Block, Job, Paper, Translation } from '../../shared/contracts';
 import { paperTitle } from '../lib/paper';
 import { pauseReasonNote } from '../lib/status';
-import { IconChat } from './ChatIcons';
+import { IconChat, IconMore } from './ChatIcons';
 import { TranslationActivity } from './TranslationActivity';
 
 export interface ReplacementRequest {
@@ -281,7 +281,7 @@ export function ReaderToolbar({
             {onRequestDelete !== undefined ? (
               <span className="toolbar-menu">
                 <button type="button" aria-label="논문 메뉴" aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}>
-                  ⋯
+                  <IconMore />
                 </button>
                 {menuOpen ? (
                   <div className="toolbar-menu__list" role="menu">
