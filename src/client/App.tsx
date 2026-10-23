@@ -1,12 +1,12 @@
 import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type RefObject, type CSSProperties } from 'react';
-import type { AppError, Block, Connection, Job, LoginAttempt, Paper, RestartTranslationRequest, Snapshot } from '../shared/contracts';
+import type { AppError, Block, Connection, Job, LoginAttempt, Paper, RestartTranslationRequest, Snapshot, Translation } from '../shared/contracts';
 import { AccountPanel } from './components/AccountPanel';
-import { AnnotationNotebook, AnnotationToolbar } from './components/AnnotationTools';
+import { AnnotationNotebook, AnnotationToolbar, useKoreanLayouts } from './components/AnnotationTools';
 import { ModelPreferences } from './components/ModelPreferences';
 import { PanelResizeHandle } from './components/PanelResizeHandle';
 import { ChatBoundary } from './components/ChatBoundary';
 import type { ChatQuote } from './components/ChatPanel';
-import { FindBar } from './components/FindBar';
+import { FindBar, revealTop } from './components/FindBar';
 import { MemoCardView } from './components/MemoCard';
 import { useAnnotations } from './components/useAnnotations';
 import { KoreanPages, type SelectVia } from './components/KoreanPane';
@@ -15,6 +15,7 @@ import { DeleteDialog, LibraryPanel } from './components/LibraryPanel';
 import { RenamePaperDialog } from './components/RenamePaperDialog';
 import { PdfPages } from './components/PdfPane';
 import { ReaderToolbar, type ReplacementRequest } from './components/ReaderToolbar';
+import { choosePane, RecordReveal, type MemoListTarget } from './lib/annotations';
 import { ApiClient, extractError, readToken } from './lib/api';
 import { keepsKeysToItself } from './lib/find';
 import { blockPage, type Size } from './lib/geometry';
@@ -41,6 +42,8 @@ import { CONTROL_LIMITS, clampSplit, clampZoom, isReadable, nextPage, onePaneBes
 
 const POLL_MS = 1_500;
 const LOGIN_POLL_MS = 2_000;
+const NO_BLOCKS: Block[] = [];
+const NO_TRANSLATIONS: Translation[] = [];
 const FALLBACK_INTRINSIC_SIZE: Size = { width: 640, height: 828 };
 /** Where a confirmed restart waits until its answer is confirmed. Never holds login data. */
 const PENDING_RESTART_KEY = 'paperread.pendingRestart';
@@ -228,6 +231,7 @@ export function App(): JSX.Element {
 
   const fail = useCallback((cause: unknown) => setError(extractError(cause)), []);
   const annotations = useAnnotations(client, paperKey, paper, fail);
+  const koreanLayouts = useKoreanLayouts(paperKey, snapshot?.translations ?? NO_TRANSLATIONS, snapshot?.blocks ?? NO_BLOCKS);
 
   // ------------------------------------------------------------- connection
 
@@ -959,9 +963,24 @@ export function App(): JSX.Element {
     [scrollKoreanToPage],
   );
 
+  // A record chosen in the memo list, waited for until it is drawn (`revealRecord`). Going to a
+  // page or a find result, moving a pane, showing the other pane by hand, or another paper gives
+  // the wait up.
+  const [recordReveal] = useState(() => new RecordReveal());
+  useEffect(() => () => recordReveal.cancel(), [paperKey, recordReveal]);
+  const showPaneByHand = useCallback((pane: Pane) => choosePane(recordReveal, setNarrowPane, pane), [recordReveal]);
+  const paneMoved = useCallback(
+    (event: { target: EventTarget }) => {
+      const target = event.target;
+      if (target instanceof Node && (pdfBody.current?.contains(target) || textBody.current?.contains(target))) recordReveal.cancel();
+    },
+    [recordReveal],
+  );
+
   // Both panes go to the page's top, which is in line by definition.
   const goToPage = useCallback(
     (page: number) => {
+      recordReveal.cancel();
       aligned.current = true;
       setCurrentPage(page);
       window.requestAnimationFrame(() => {
@@ -973,13 +992,14 @@ export function App(): JSX.Element {
         scrollKoreanToPage(page);
       });
     },
-    [scrollKoreanToPage, scrollPaneTo],
+    [recordReveal, scrollKoreanToPage, scrollPaneTo],
   );
 
   // A find result is shown in its pane: its page first while it is not drawn, then the result
   // itself, with the other pane brought in line.
   const revealFind = useCallback(
     (pane: Pane, page: number, top: number | null) => {
+      recordReveal.cancel();
       setNarrowPane(pane);
       if (top === null) {
         goToPage(page);
@@ -989,7 +1009,23 @@ export function App(): JSX.Element {
       setCurrentPage(pageAtScroll(pane));
       alignFollower(pane);
     },
-    [alignFollower, goToPage, pageAtScroll, scrollPaneTo],
+    [alignFollower, goToPage, pageAtScroll, recordReveal, scrollPaneTo],
+  );
+
+  // A record chosen in the memo list: its page in its own pane (the pane shown when only one is),
+  // then, once the record is drawn there, however long that takes, its first line brought into
+  // view and marked a moment, unless the reader went elsewhere meanwhile; closing the list does
+  // not give the wait up. A record not drawn where it was (lost, or on a Korean page that still
+  // shows the original) takes the reader to its page.
+  const revealRecord = useCallback(
+    (target: MemoListTarget) => {
+      const pane: Pane = target.surface === 'translation' ? 'translation' : 'source';
+      if (chatSheet) setNotebookOpen(false);
+      revealFind(pane, target.page, null);
+      if (target.rect === null) return;
+      recordReveal.start(() => (pane === 'source' ? pdfBody.current : textBody.current), target.highlightId, (body, first) => revealFind(pane, target.page, revealTop(body, first)));
+    },
+    [chatSheet, recordReveal, revealFind],
   );
 
   // ---------------------------------------------------------- question panel
@@ -1333,6 +1369,10 @@ export function App(): JSX.Element {
               hidden={paper !== null && !readable}
               // Covered by the panel's sheet on a narrow screen: out of reach until it closes.
               inert={(chatOpen || notebookOpen) && chatSheet}
+              onWheelCapture={paneMoved}
+              onTouchStartCapture={paneMoved}
+              onPointerDownCapture={paneMoved}
+              onKeyDownCapture={paneMoved}
             >
               <section className={`pane ${narrowPane === 'source' ? '' : 'hidden'}`} style={{ flex: `0 0 ${split * 100}%` }} aria-label="원본 PDF">
                 <div className="pane-head pane-head--source">
@@ -1364,7 +1404,7 @@ export function App(): JSX.Element {
                   </div>
                   <span className="pane-hint">드래그: 하이라이트 · 클릭: 한국어 같은 쪽으로</span>
                   <span className="pane-switch">
-                    <button type="button" onClick={() => setNarrowPane('translation')}>
+                    <button type="button" onClick={() => showPaneByHand('translation')}>
                       번역 보기
                     </button>
                   </span>
@@ -1416,7 +1456,7 @@ export function App(): JSX.Element {
                   </span>
                   <span className="pane-hint">클릭: 원본 같은 쪽으로</span>
                   <span className="pane-switch">
-                    <button type="button" onClick={() => setNarrowPane('source')}>
+                    <button type="button" onClick={() => showPaneByHand('source')}>
                       원본 보기
                     </button>
                   </span>
@@ -1482,12 +1522,8 @@ export function App(): JSX.Element {
             {notebookOpen ? <>
               <button type="button" className="chat-scrim" aria-label="메모 모음 닫기" tabIndex={-1} onClick={() => setNotebookOpen(false)} />
               <aside className="chat-dock is-open notebook-dock" role={chatSheet ? 'dialog' : undefined} aria-label="메모 모음 패널" onKeyDown={(event) => { if (event.key === 'Escape' && !event.nativeEvent.isComposing) { event.preventDefault(); event.stopPropagation(); setNotebookOpen(false); } }}>
-                <div className="chat-dock__inner"><AnnotationNotebook highlights={annotations.highlights} translations={snapshot?.translations ?? []} blocks={snapshot?.blocks ?? []} modelId={snapshot?.job?.modelId ?? null}
-                  onOpen={annotations.open} onClose={() => setNotebookOpen(false)} onNavigate={(highlight) => {
-                    setNarrowPane(highlight.surface === 'translation' ? 'translation' : 'source');
-                    if (chatSheet) setNotebookOpen(false);
-                    goToPage(highlight.page);
-                  }} /></div>
+                <div className="chat-dock__inner"><AnnotationNotebook highlights={annotations.highlights} translations={snapshot?.translations ?? []} blocks={snapshot?.blocks ?? []} modelId={snapshot?.job?.modelId ?? null} layouts={koreanLayouts}
+                  {...annotations.listDeletes} onOpen={annotations.open} onClose={() => setNotebookOpen(false)} onNavigate={revealRecord} /></div>
               </aside>
             </> : null}
           </div>

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type JSX, type RefObject } from 'react';
 import type { AnnotationMode, Block, Highlight, Translation } from '../../shared/contracts';
-import { ANNOTATION_LAYOUT_EVENT, HIGHLIGHTER_THICKNESS, PEN_WIDTH, annotationSurface, annotationUnavailable } from '../lib/annotations';
+import { ANNOTATION_LAYOUT_EVENT, HIGHLIGHTER_THICKNESS, PEN_WIDTH, annotationSurface, memoList, memoListTarget, strokeLayouts, type MemoListEntry, type MemoListTarget } from '../lib/annotations';
+import type { RecordBusy } from '../lib/annotation-session';
 import { HIGHLIGHT_COLORS, HIGHLIGHT_FILLS, HIGHLIGHT_LABELS, INK_COLORS, INK_LABELS, inkPixels } from './HighlightLayer';
 import { ERASER_RADII, ERASER_SIZE_LABELS, type EraserSize } from '../lib/eraser';
 import { keepsKeysToItself } from '../lib/find';
@@ -252,46 +253,117 @@ export function SelectionMenu({ text, position, onHighlight, onMemo, onAsk, onCl
   </div>;
 }
 
-export interface AnnotationNotebookProps {
-  highlights: Highlight[]; onOpen(highlight: Highlight): void; onClose(): void;
-  onNavigate?(highlight: Highlight): void; translations?: Translation[]; blocks: Block[];
-  /** The job's model (null without a job): a note is checked against the translation the page shows. */
-  modelId: string | null;
+export interface MemoListItemProps {
+  entry: MemoListEntry;
+  /** A request about it is on its way (its delete, or a change from its card): its buttons wait
+   * for the service's answer. */
+  busy: RecordBusy | null;
+  /** Why the service refused to delete it, until it is asked again. */
+  error: string | null;
+  onNavigate(target: MemoListTarget): void;
+  onOpen(highlight: Highlight): void;
+  onDelete(highlightId: string): void;
 }
 
-export function AnnotationNotebook({ highlights, onOpen, onClose, onNavigate, translations = [], blocks, modelId }: AnnotationNotebookProps): JSX.Element {
-  const [query, setQuery] = useState('');
-  const [surface, setSurface] = useState<'all'|'original'|'translation'>('all');
-  const [renderedLayouts,setRenderedLayouts]=useState<Map<number,string>>(new Map());
-  useEffect(()=>{
-    const measure=()=>{
-      const layouts=new Map<number,string>();
-      for(const page of document.querySelectorAll<HTMLElement>('.kr-page[data-annotation-layout-signature]')) layouts.set(Number(page.dataset.page),page.dataset.annotationLayoutSignature!);
-      setRenderedLayouts(layouts);
+/** One record of the memo list: its page and side, the text it marks and its memo. Pressing it
+ * goes to the record; its own buttons open its card (a memo to add or edit, its colour) and delete
+ * it. A record that lost its place is only to be deleted: it is not drawn anywhere. */
+export function MemoListItem({ entry, busy, error, onNavigate, onOpen, onDelete }: MemoListItemProps): JSX.Element {
+  const { record, place } = entry;
+  const kind = record.kind === 'ink' ? '필기' : record.note ? '메모' : '하이라이트';
+  const waiting = busy !== null;
+  return <article className={`annotation-entry annotation-${record.color}`} data-highlight-id={record.highlightId} aria-busy={waiting}>
+    <button type="button" className="annotation-entry__go" onClick={() => onNavigate(memoListTarget(entry))}>
+      <span className="annotation-entry-heading"><span className="annotation-entry__where">{record.page}쪽 · {annotationSurface(record) === 'translation' ? '한국어' : '원문'}</span><span className="annotation-entry__kind">{kind}</span></span>
+      {record.kind !== 'ink' ? <span className="annotation-entry__quote">{record.text}</span> : null}
+      {record.note ? <span className="annotation-entry__note">{record.note}</span> : null}
+    </button>
+    {place === 'waiting' ? <small>이 쪽 번역이 끝나면 한국어 쪽에 표시됩니다.</small> : null}
+    {error !== null ? <p className="annotation-entry__error" role="alert">삭제하지 못했습니다. {error}</p> : null}
+    <div className="annotation-entry__actions">
+      {record.kind !== 'ink' && place !== 'lost' ? <button type="button" className="annotation-edit" disabled={waiting} onClick={() => onOpen(record)}>{record.note ? '메모 편집' : '메모 추가'} · 색상</button> : null}
+      <button type="button" className="annotation-delete" aria-label={`${record.page}쪽 ${kind} 삭제`} disabled={waiting} onClick={() => onDelete(record.highlightId)}>{busy === 'deleting' ? '삭제 중…' : '삭제'}</button>
+    </div>
+  </article>;
+}
+
+export interface AnnotationNotebookProps {
+  highlights: Highlight[]; onOpen(highlight: Highlight): void; onClose(): void;
+  /** Go to a record chosen in the list: its page, and its first line where it is drawn. */
+  onNavigate(target: MemoListTarget): void;
+  /** Delete a record from the list, through the service as its own card does. */
+  onDelete(highlightId: string): void;
+  /** Records a request is on its way for, and why the service refused to delete one. */
+  busy: Readonly<Record<string, RecordBusy>>; deleteErrors: Readonly<Record<string, string>>;
+  translations?: Translation[]; blocks: Block[];
+  /** The job's model (null without a job): a note is checked against the translation the page shows. */
+  modelId: string | null;
+  /** The layouts the Korean pages' pen strokes are judged by (`useKoreanLayouts`). */
+  layouts: ReadonlyMap<number, string>;
+}
+
+const NO_LAYOUTS: ReadonlyMap<number, string> = new Map();
+
+function sameLayouts(a: ReadonlyMap<number, string>, b: ReadonlyMap<number, string>): boolean {
+  return a.size === b.size && [...a].every(([page, layout]) => b.get(page) === layout);
+}
+
+/**
+ * The layouts the memo list judges the Korean pages' pen strokes of the open paper by
+ * (`strokeLayouts`): each page drawn now as it is measured on screen, and each page drawn before
+ * as it was last drawn. Kept in memory for as long as the paper is open, never stored; another
+ * paper starts over. Kept whether or not the memo list is open, as pages are drawn and let go.
+ */
+export function useKoreanLayouts(paperKey: string | null, translations: Translation[], blocks: Block[]): ReadonlyMap<number, string> {
+  const [seen, setSeen] = useState<{ paperKey: string | null; drawn: ReadonlyMap<number, string>; lastDrawn: ReadonlyMap<number, string> }>({ paperKey, drawn: NO_LAYOUTS, lastDrawn: NO_LAYOUTS });
+  useEffect(() => {
+    const measure = () => {
+      const drawn = new Map<number, string>();
+      for (const page of document.querySelectorAll<HTMLElement>('.kr-page[data-annotation-layout-signature]')) drawn.set(Number(page.dataset.page), page.dataset.annotationLayoutSignature!);
+      setSeen((before) => {
+        const earlier = before.paperKey === paperKey ? before.lastDrawn : NO_LAYOUTS;
+        const lastDrawn = new Map([...earlier, ...drawn]);
+        if (before.paperKey === paperKey && sameLayouts(before.drawn, drawn) && sameLayouts(before.lastDrawn, lastDrawn)) return before;
+        return { paperKey, drawn, lastDrawn };
+      });
     };
     measure();
-    document.addEventListener(ANNOTATION_LAYOUT_EVENT,measure);
-    return()=>document.removeEventListener(ANNOTATION_LAYOUT_EVENT,measure);
-  },[]);
-  const entries = useMemo(() => highlights.filter((h) => (surface === 'all' || annotationSurface(h) === surface) && `${h.text} ${h.note ?? ''}`.toLocaleLowerCase().includes(query.toLocaleLowerCase())).sort((a, b) => a.page - b.page || a.createdAt.localeCompare(b.createdAt)), [highlights, query, surface]);
+    document.addEventListener(ANNOTATION_LAYOUT_EVENT, measure);
+    return () => document.removeEventListener(ANNOTATION_LAYOUT_EVENT, measure);
+  }, [paperKey]);
+  return useMemo(() => (seen.paperKey === paperKey ? strokeLayouts(seen.drawn, seen.lastDrawn, translations, blocks) : NO_LAYOUTS), [seen, paperKey, translations, blocks]);
+}
+
+/**
+ * The memo list: the highlights and memos of both sides of the whole paper by page, then by place
+ * on the page, the original before the Korean, and apart from them the records that lost their
+ * place (pen strokes among them; a pen stroke is listed only then). Where a record stands is
+ * judged here each time, never stored: a Korean page's pen strokes by the layout it is drawn with
+ * on screen, or was last drawn with (`layouts`), anything else by the paper's stored blocks and
+ * translations.
+ */
+export function AnnotationNotebook({ highlights, onOpen, onClose, onNavigate, onDelete, busy, deleteErrors, translations = [], blocks, modelId, layouts }: AnnotationNotebookProps): JSX.Element {
+  const [query, setQuery] = useState('');
+  const [surface, setSurface] = useState<'all'|'original'|'translation'>('all');
+  const list = useMemo(() => memoList(highlights, translations, blocks, layouts, modelId), [highlights, translations, blocks, layouts, modelId]);
+  const shown = (entries: MemoListEntry[]) => entries.filter(({ record }) => (surface === 'all' || annotationSurface(record) === surface) && `${record.text} ${record.note ?? ''}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
+  const entries = shown(list.entries);
+  const lost = shown(list.lost);
+  const total = list.entries.length + list.lost.length;
+  const item = (entry: MemoListEntry) => <MemoListItem key={entry.record.highlightId} entry={entry} busy={busy[entry.record.highlightId] ?? null} error={deleteErrors[entry.record.highlightId] ?? null} onNavigate={onNavigate} onOpen={onOpen} onDelete={onDelete} />;
   return <aside className="annotation-notebook" aria-label="메모 모음" onKeyDown={(e) => { if(e.key === 'Escape' && !e.nativeEvent.isComposing) {e.preventDefault();e.stopPropagation();onClose();} }}>
-    <header><div><h2>메모 모음</h2><span>{highlights.length}개 기록</span></div><button type="button" aria-label="메모 모음 닫기" onClick={onClose}>×</button></header>
+    <header><div><h2>메모 모음</h2><span>{total}개 기록</span></div><button type="button" aria-label="메모 모음 닫기" onClick={onClose}>×</button></header>
     <div className="annotation-notebook-filters">
       <input type="search" aria-label="메모 검색" placeholder="선택한 글·메모 검색" value={query} onChange={(e) => setQuery(e.target.value)} />
-      <div role="group" aria-label="기록 지면"><button type="button" aria-pressed={surface === 'all'} onClick={() => setSurface('all')}>전체</button><button type="button" aria-pressed={surface === 'original'} onClick={() => setSurface('original')}>원문</button><button type="button" aria-pressed={surface === 'translation'} onClick={() => setSurface('translation')}>번역</button></div>
+      <div role="group" aria-label="기록 지면"><button type="button" aria-pressed={surface === 'all'} onClick={() => setSurface('all')}>전체</button><button type="button" aria-pressed={surface === 'original'} onClick={() => setSurface('original')}>원문</button><button type="button" aria-pressed={surface === 'translation'} onClick={() => setSurface('translation')}>한국어</button></div>
     </div>
     <div className="annotation-notebook-list">
-      {entries.length === 0 ? <p className="annotation-empty">{highlights.length === 0 ? '두 지면에서 글자를 선택해 메모하거나, 펜으로 바로 필기하세요.' : '일치하는 기록이 없습니다.'}</p> : entries.map((h) => {
-        const unavailable = annotationUnavailable(h, translations, blocks, renderedLayouts.get(h.page), modelId);
-        return <article key={h.highlightId} className={`annotation-entry annotation-${h.color}`}>
-          <div className="annotation-entry-heading"><button type="button" onClick={() => onNavigate?.(h)}>{h.page}쪽 · {annotationSurface(h) === 'translation' ? '번역' : '원문'}</button><span>{h.kind === 'ink' ? '필기' : h.note ? '메모' : '하이라이트'}</span></div>
-          {h.kind !== 'ink' ? <blockquote>{h.text}</blockquote> : null}
-          {h.note ? <p>{h.note}</p> : null}
-          {unavailable ? <small>{h.kind==='ink'?'번역 내용이나 글꼴·줄바꿈이 바뀌어 필기를 숨겼습니다. 메모는 보관됩니다.':'번역이 바뀌어 지면의 위치를 확인할 수 없습니다. 기록은 보관됩니다.'}</small> : null}
-          {!unavailable&&h.surface==='translation'&&h.kind==='ink' ? <small>작성 당시의 글꼴과 줄바꿈이 유지되는 지면에 표시합니다.</small> : null}
-          <button type="button" className="annotation-edit" onClick={() => onOpen(h)}>{h.kind === 'ink' ? '색상·삭제' : `${h.note ? '메모 편집' : '메모 추가'} · 색상·삭제`}</button>
-        </article>;
-      })}
+      {entries.length === 0 && lost.length === 0 ? <p className="annotation-empty">{total === 0 ? '원문이나 한국어 쪽에서 글자를 선택해 하이라이트나 메모를 남기면 여기에 쪽 순서로 모입니다.' : '일치하는 기록이 없습니다.'}</p> : entries.map(item)}
+      {lost.length > 0 ? <section className="annotation-lost" aria-label="위치를 잃은 기록">
+        <h3>위치를 잃은 기록 <span>{lost.length}</span></h3>
+        <p>번역문이나 쪽 배치가 바뀌어 원래 자리에 표시할 수 없는 기록입니다. 지우기 전까지 보관됩니다.</p>
+        {lost.map(item)}
+      </section> : null}
     </div>
   </aside>;
 }

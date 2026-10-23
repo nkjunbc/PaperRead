@@ -48,24 +48,27 @@ export interface MemoMenuProps {
   onAsk?(text: string): void;
   /** Called before any choice is acted on: the menu closes. */
   onChosen(): void;
+  /** A request about the record is on its way (from its card or the memo list): nothing here
+   * changes it until the service answers. */
+  locked?: boolean;
 }
 
 /** A saved record's own menu, the one place its memo and the record itself are deleted from. A
  * pen stroke takes no memo: one an older version put there can only be deleted. */
-export function MemoMenu({ record, editing, onEdit, onDeleteMemo, onDeleteRecord, onRecolor, onAsk, onChosen }: MemoMenuProps): JSX.Element {
+export function MemoMenu({ record, editing, onEdit, onDeleteMemo, onDeleteRecord, onRecolor, onAsk, onChosen, locked = false }: MemoMenuProps): JSX.Element {
   const ink = record.kind === 'ink';
-  const item = (label: string, action: () => void) => (
-    <button type="button" role="menuitem" onClick={() => { onChosen(); action(); }}>{label}</button>
+  const item = (label: string, action: () => void, changes = true) => (
+    <button type="button" role="menuitem" disabled={changes && locked} onClick={() => { onChosen(); action(); }}>{label}</button>
   );
   return (
     <div className="memo-card__menu" role="menu" aria-label={ink ? '필기 메뉴' : '메모 메뉴'}>
       {!ink && record.note !== null && !editing ? item('편집', onEdit) : null}
       {record.note !== null ? item('메모 삭제', onDeleteMemo) : null}
       {item(ink ? '필기 삭제' : '하이라이트 삭제', onDeleteRecord)}
-      {!ink && onAsk !== undefined ? item('질문에 인용', () => onAsk(markedText([record]))) : null}
+      {!ink && onAsk !== undefined ? item('질문에 인용', () => onAsk(markedText([record])), false) : null}
       <div className="memo-card__colors" role="group" aria-label="색">
         {HIGHLIGHT_COLORS.map((color) => (
-          <button key={color} type="button" className="annotation-swatch" aria-label={(ink ? INK_LABELS : HIGHLIGHT_LABELS)[color]} aria-pressed={record.color === color} style={{ '--swatch': (ink ? INK_COLORS : HIGHLIGHT_FILLS)[color] } as CSSProperties} onClick={() => { onChosen(); if (record.color !== color) onRecolor(color); }} />
+          <button key={color} type="button" className="annotation-swatch" aria-label={(ink ? INK_LABELS : HIGHLIGHT_LABELS)[color]} aria-pressed={record.color === color} disabled={locked} style={{ '--swatch': (ink ? INK_COLORS : HIGHLIGHT_FILLS)[color] } as CSSProperties} onClick={() => { onChosen(); if (record.color !== color) onRecolor(color); }} />
         ))}
       </div>
     </div>
@@ -172,7 +175,7 @@ export function MemoCardView({ card, record, onText, onSave, onEdit, onClose, on
         </button>
       </div>
       {showMenu && record !== null ? (
-        <MemoMenu record={record} editing={writing} onEdit={onEdit} onDeleteMemo={onDeleteMemo} onDeleteRecord={onDeleteRecord} onRecolor={onRecolor} onAsk={onAsk} onChosen={() => setMenuOpen(false)} />
+        <MemoMenu record={record} editing={writing} onEdit={onEdit} onDeleteMemo={onDeleteMemo} onDeleteRecord={onDeleteRecord} onRecolor={onRecolor} onAsk={onAsk} onChosen={() => setMenuOpen(false)} locked={card.saving} />
       ) : null}
       {writing ? (
         <textarea ref={field} aria-label="메모" placeholder="여기에 메모를 입력합니다." maxLength={5000} readOnly={card.saving} value={card.text} onChange={(event) => onText(event.target.value)} />

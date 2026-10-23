@@ -17,7 +17,30 @@
 .annotation-notebook header { display:flex; align-items:center; justify-content:space-between; padding:14px 16px; border-bottom:1px solid var(--line); }
 .annotation-notebook h2 { margin:0; font-size:15px; font-weight:600; }.annotation-notebook header span { color:var(--muted); font-size:11px; }
 .annotation-notebook-filters { padding:12px 16px; border-bottom:1px solid var(--line); }.annotation-notebook-filters input { width:100%; padding:7px 9px; border:1px solid var(--line); border-radius:4px; background:var(--panel); font-size:12px; }.annotation-notebook-filters > div { display:flex; gap:4px; margin-top:8px; }
-.annotation-notebook-list { overflow:auto; min-height:0; padding:0 16px 20px; }.annotation-entry { padding:16px 0; border-bottom:1px solid var(--line); }.annotation-entry-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }.annotation-entry-heading > button { border:0; padding:0; font-size:11px; color:var(--muted); }.annotation-entry-heading > span { font-size:10px; color:var(--muted); }.annotation-entry blockquote { margin:0 0 9px; border-left:3px solid var(--annotation-color); padding-left:10px; font-size:12px; line-height:1.7; overflow-wrap:anywhere; max-height:150px; overflow:auto; }.annotation-entry p { margin:7px 0; font-size:12px; white-space:pre-wrap; overflow-wrap:anywhere; }.annotation-entry small { display:block; color:var(--muted); font-size:11px; margin:8px 0; }.annotation-edit { background:none; padding:2px 0; border:0; color:var(--muted); }.annotation-empty { color:var(--muted); font-size:12px; line-height:1.8; padding:18px 0; }
+.annotation-notebook-list { overflow:auto; min-height:0; padding:4px 8px 20px; }
+.annotation-empty { color:var(--muted); font-size:12px; line-height:1.8; padding:18px 8px; }
+
+/* The memo list: one record a row, pressed as a whole to go to it, as the tools' menus are. */
+.annotation-entry { padding:4px 0 6px; border-bottom:1px solid #e5e5e5; }
+.annotation-entry[aria-busy="true"] { opacity:.6; }
+.annotation-entry__go { display:block; width:100%; padding:8px; border:0; border-radius:3px; background:transparent; color:#1a1a1a; text-align:left; }
+.annotation-entry__go:hover:not(:disabled) { background:#f0f0f0; border-color:transparent; }
+.annotation-entry-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px; }
+.annotation-entry__where { font-size:12px; font-weight:600; color:#424242; }
+.annotation-entry__kind { font-size:11px; color:#6b6b66; }
+.annotation-entry__quote { display:block; border-left:3px solid var(--annotation-color); padding-left:10px; font-size:12px; line-height:1.7; overflow-wrap:anywhere; max-height:150px; overflow:auto; }
+/* A memo looks like its card: a yellow note. */
+.annotation-entry__note { display:block; margin-top:8px; padding:6px 10px; border:1px solid #fff386; border-radius:2px; background:#fff9c7; color:#3d3a10; font-size:12px; line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; }
+.annotation-entry small { display:block; margin:0 8px 4px; color:#6b6b66; font-size:11px; }
+.annotation-entry__error { margin:2px 8px 4px; color:#a4262c; font-size:11px; }
+.annotation-entry__actions { display:flex; justify-content:flex-end; gap:2px; padding:0 4px; }
+.annotation-edit,.annotation-delete { padding:3px 8px; border:0; border-radius:3px; background:transparent; color:#424242; }
+.annotation-edit:hover:not(:disabled),.annotation-delete:hover:not(:disabled) { background:#f0f0f0; border-color:transparent; }
+.annotation-delete:hover:not(:disabled) { color:#a4262c; }
+.annotation-lost { margin-top:20px; }
+.annotation-lost h3 { margin:0 8px 4px; font-size:13px; font-weight:600; color:#1a1a1a; }
+.annotation-lost h3 span { margin-left:4px; color:#6b6b66; font-weight:400; }
+.annotation-lost > p { margin:0 8px 6px; color:#6b6b66; font-size:11px; line-height:1.6; }
 @media(max-width:700px) { .annotation-toolbar { padding:6px 10px; gap:8px; }.annotation-notebook { position:absolute; right:0; top:0; bottom:0; width:min(360px,100%); z-index:30; box-shadow:-5px 0 20px #0001; } }
 
 /* ---------------------------------------------------- tools, as Edge's reading bar has them
@@ -77,6 +100,9 @@ button.annotation-swatch[aria-pressed="true"],button.annotation-swatch[aria-pres
    the boxes by the pane. */
 .highlight-layer .highlight-box { pointer-events:none; border-radius:0; mix-blend-mode:multiply; }
 .highlight-layer .highlight-box:focus-visible { outline:2px solid #0078d4; outline-offset:1px; }
+/* A record chosen in the memo list, marked a moment where it is. */
+.highlight-layer .highlight-box.is-revealed { animation:annotation-revealed 1.8s ease-out; }
+@keyframes annotation-revealed { 0%, 55% { box-shadow:0 0 0 3px #0072c9; } 100% { box-shadow:0 0 0 3px transparent; } }
 .highlight-layer .highlight-box.is-selection { background-color:#99c1da; }
 .highlight-layer .highlight-draft:not(.is-selection) { opacity:.75; }
 /* A thinner highlighter paints only this band along the bottom of the line's box. */

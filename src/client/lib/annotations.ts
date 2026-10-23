@@ -1,8 +1,10 @@
-import type { AnnotationInput, AnnotationSurface, Block, Highlight, InkPoint, TextAnchor, Translation } from '../../shared/contracts';
+import type { AnnotationInput, AnnotationSurface, Block, Highlight, InkPoint, Region, TextAnchor, Translation } from '../../shared/contracts';
 import { selectTranslations } from '../../shared/translations';
 import { keepsKeysToItself } from './find';
 import { selectionToRegions, type PageSweep, type PixelRect, type SpanBox } from './highlights';
 import type { Size } from './geometry';
+import { buildKoreanLayout } from './korean-page';
+import type { Pane } from './sync';
 import { inlineMathText, renderedTranslationText, sourceMathText, translationTextParts } from './translation-text';
 
 export function annotationSurface(highlight: Highlight): AnnotationSurface { return highlight.surface ?? 'original'; }
@@ -96,16 +98,213 @@ export function translationsOnPage(translations: Translation[], blocks: Block[],
   return translations.filter((t) => ids.has(t.blockId));
 }
 
+/** What a Korean page's layout signature starts with: its translation and blocks, before the
+ * lines they are drawn in on screen are measured. */
+function pageContentSignature(translations: Translation[], blocks: Block[], page: number): string {
+  return translationLayoutSignature(translationsOnPage(translations, blocks, page), blocks.filter((b) => b.regions.some((r) => r.page === page)));
+}
+
 /** `modelId` is the job's model (null without a job): a note is checked against the translation
  * the Korean page shows for its paragraph. */
 export function annotationUnavailable(highlight: Highlight, translations: Translation[], blocks: Block[], renderedLayoutSignature: string | undefined, modelId: string | null): boolean {
   if (annotationSurface(highlight) !== 'translation') return false;
   if (highlight.kind === 'ink') {
     if(renderedLayoutSignature!==undefined)return highlight.layoutSignature!==renderedLayoutSignature;
-    return !highlight.layoutSignature?.startsWith(translationLayoutSignature(translationsOnPage(translations, blocks, highlight.page),blocks.filter((b)=>b.regions.some((r)=>r.page===highlight.page))));
+    return !highlight.layoutSignature?.startsWith(pageContentSignature(translations, blocks, highlight.page));
   }
   const shown = selectTranslations(blocks, translations, modelId);
   return !highlight.anchors?.every((anchor) => resolveTranslationAnchor(shown.get(anchor.blockId),blocks.find(block=>block.blockId===anchor.blockId),anchor)!==null);
+}
+
+/** Where a record stands now, judged each time the paper is shown and never stored. `placed`:
+ * drawn where it was made. `lost`: the Korean text or page it was made on changed, so it is not
+ * drawn anywhere; it is kept until the reader deletes it. `waiting`: on a Korean page that shows
+ * the original until its translation is finished; it is drawn there again once it is. */
+export type AnnotationPlace = 'placed' | 'lost' | 'waiting';
+
+/** One record of the memo list, and where it stands now. */
+export interface MemoListEntry {
+  record: Highlight;
+  place: AnnotationPlace;
+}
+
+/** The memo list: the highlights and memos of both sides of the whole paper, and apart from them
+ * the records that lost their place, pen strokes among them. A pen stroke is listed only once it
+ * is lost. */
+export interface MemoList {
+  entries: MemoListEntry[];
+  lost: MemoListEntry[];
+}
+
+/** Where the memo list takes the reader for a record: its page on its own side, and its first
+ * line there; `rect` is null for a record not drawn where it was (lost, or waiting for its page's
+ * translation), which takes the reader to its page. */
+export interface MemoListTarget {
+  highlightId: string;
+  page: number;
+  surface: AnnotationSurface;
+  rect: Region | null;
+}
+
+export function memoListTarget({ record, place }: MemoListEntry): MemoListTarget {
+  return { highlightId: record.highlightId, page: record.page, surface: annotationSurface(record), rect: place === 'placed' ? (record.rects[0] ?? null) : null };
+}
+
+/** The block region of `page` nearest to the middle of `rect` (the one it lies in, when it does),
+ * as the block's reading order and the region's place in the block; 0 for a page without blocks. */
+function placeInBlocks(blocks: readonly Block[], page: number, rect: Region): [number, number] {
+  const x = rect.x + rect.width / 2;
+  const y = rect.y + rect.height / 2;
+  let best: [number, number] = [0, 0];
+  let nearest = Infinity;
+  for (const block of blocks) {
+    block.regions.forEach((region, index) => {
+      if (region.page !== page) return;
+      const dx = Math.max(region.x - x, 0, x - region.x - region.width);
+      const dy = Math.max(region.y - y, 0, y - region.y - region.height);
+      const distance = dx * dx + dy * dy;
+      if (distance < nearest || (distance === nearest && block.order < best[0])) {
+        nearest = distance;
+        best = [block.order, index];
+      }
+    });
+  }
+  return best;
+}
+
+/** Where a record sits in its page's reading order: the paper's own block order (columns left to
+ * right, as the extraction read them; a Korean record by the paragraph it marks), then the line
+ * in the block, then top to bottom and left to right. */
+function readingPosition(blocks: readonly Block[], orderOf: ReadonlyMap<string, number>, record: Highlight): number[] {
+  const anchor = record.anchors?.[0];
+  const order = anchor === undefined ? undefined : orderOf.get(anchor.blockId);
+  if (anchor !== undefined && order !== undefined) return [order, 0, anchor.start, 0];
+  const rect = record.rects[0];
+  if (rect === undefined) return [0, 0, 0, 0];
+  return [...placeInBlocks(blocks, record.page, rect), rect.y, rect.x];
+}
+
+/** Records by page, the original before the Korean, then by place on the page. */
+function inReadingOrder(blocks: readonly Block[], entries: MemoListEntry[]): MemoListEntry[] {
+  const orderOf = new Map(blocks.map((block) => [block.blockId, block.order]));
+  const keyed = entries.map((entry) => ({ entry, key: [entry.record.page, annotationSurface(entry.record) === 'translation' ? 1 : 0, ...readingPosition(blocks, orderOf, entry.record)] }));
+  const compare = (a: number[], b: number[]) => {
+    for (let index = 0; index < a.length; index += 1) if (a[index] !== b[index]) return a[index] - b[index];
+    return 0;
+  };
+  return keyed.sort((a, b) => compare(a.key, b.key) || a.entry.record.createdAt.localeCompare(b.entry.record.createdAt)).map(({ entry }) => entry);
+}
+
+/** How long a record chosen in the memo list stays marked where it is drawn. */
+export const REVEAL_MS = 1800;
+
+/** The boxes a highlight or memo is drawn with in a pane, one per line, in its lines' order. */
+export function drawnMarks(body: ParentNode, highlightId: string): HTMLElement[] {
+  return Array.from(body.querySelectorAll<HTMLElement>('.highlight-box[data-highlight-id]')).filter((mark) => mark.dataset.highlightId === highlightId);
+}
+
+const revealTimers = new WeakMap<HTMLElement, number>();
+
+/** Mark a record a moment where it is drawn (annotations.css), from the start again when it
+ * still was. */
+export function markRevealed(marks: readonly HTMLElement[]): void {
+  for (const mark of marks) {
+    window.clearTimeout(revealTimers.get(mark));
+    mark.classList.remove('is-revealed');
+    void mark.offsetWidth;
+    mark.classList.add('is-revealed');
+    revealTimers.set(mark, window.setTimeout(() => mark.classList.remove('is-revealed'), REVEAL_MS));
+  }
+}
+
+/** The frames a wait looks again on: the window's animation frames in the app. */
+export interface Frames {
+  request(callback: () => void): number;
+  cancel(handle: number): void;
+}
+
+const animationFrames: Frames = { request: (callback) => window.requestAnimationFrame(callback), cancel: (handle) => window.cancelAnimationFrame(handle) };
+
+/**
+ * A record chosen in the memo list, on its way into view. Its pane is looked at once a frame
+ * until the record is drawn there, however long its page takes to be drawn; then `show` brings
+ * its first box into view and the record is marked a moment. One wait at a time: a newer one
+ * gives the one before up, and so does `cancel` (the reader went elsewhere, another paper).
+ */
+export class RecordReveal {
+  private frame: number | null = null;
+
+  constructor(private readonly frames: Frames = animationFrames) {}
+
+  start(pane: () => HTMLElement | null, highlightId: string, show: (body: HTMLElement, first: HTMLElement) => void): void {
+    this.cancel();
+    const look = () => {
+      this.frame = null;
+      const body = pane();
+      const marks = body === null ? [] : drawnMarks(body, highlightId);
+      if (body === null || marks.length === 0) {
+        this.frame = this.frames.request(look);
+        return;
+      }
+      show(body, marks[0]);
+      markRevealed(marks);
+    };
+    this.frame = this.frames.request(look);
+  }
+
+  cancel(): void {
+    if (this.frame !== null) this.frames.cancel(this.frame);
+    this.frame = null;
+  }
+}
+
+/** The reader shows the other pane with its own button, where only one pane is shown at a time.
+ * That is the reader going elsewhere: a record still waited for would show its own pane again
+ * once drawn, so the wait is given up first. */
+export function choosePane(reveal: RecordReveal, setPane: (pane: Pane) => void, pane: Pane): void {
+  reveal.cancel();
+  setPane(pane);
+}
+
+/**
+ * The layouts the memo list judges the Korean pages' pen strokes by. A page drawn now goes by its
+ * layout as measured on screen (`drawn`). A page drawn earlier in this paper and not now goes by
+ * the layout it was last drawn with (`lastDrawn`), so a stroke that lost its place on screen stays
+ * lost once its page is out of the pages drawn. That layout is let go once the page's translation
+ * or blocks are no longer those it was drawn with, and is of no use when the page was drawn with
+ * no stroke on it (its lines were not measured then); such a page, like one never drawn, is judged
+ * by its stored translation and blocks alone. Measured in the reader only, never stored.
+ */
+export function strokeLayouts(drawn: ReadonlyMap<number, string>, lastDrawn: ReadonlyMap<number, string>, translations: Translation[], blocks: Block[]): Map<number, string> {
+  const layouts = new Map(drawn);
+  for (const [page, layout] of lastDrawn) {
+    if (layouts.has(page)) continue;
+    const content = pageContentSignature(translations, blocks, page);
+    if (layout.length > content.length && layout.startsWith(content)) layouts.set(page, layout);
+  }
+  return layouts;
+}
+
+/** The memo list of a paper. Every record is judged, not only those of the pages drawn now:
+ * `layouts` holds the layouts Korean pages' pen strokes are judged by (`strokeLayouts`), and
+ * every other page is judged by its stored blocks and translations. `modelId` is the job's model
+ * (null without a job): the Korean page shows that model's translation. */
+export function memoList(highlights: readonly Highlight[], translations: Translation[], blocks: Block[], layouts: ReadonlyMap<number, string>, modelId: string | null): MemoList {
+  const showsOriginal = new Map<number, boolean>();
+  const waiting = (page: number): boolean => {
+    if (!showsOriginal.has(page)) showsOriginal.set(page, buildKoreanLayout(blocks, translations, page, modelId).sourceOnly);
+    return showsOriginal.get(page)!;
+  };
+  const entries: MemoListEntry[] = [];
+  const lost: MemoListEntry[] = [];
+  for (const record of highlights) {
+    const place: AnnotationPlace = annotationSurface(record) !== 'translation' ? 'placed'
+      : waiting(record.page) ? 'waiting'
+        : annotationUnavailable(record, translations, blocks, layouts.get(record.page), modelId) ? 'lost' : 'placed';
+    if (place === 'lost') lost.push({ record, place });
+    else if (record.kind !== 'ink') entries.push({ record, place });
+  }
+  return { entries: inReadingOrder(blocks, entries), lost: inReadingOrder(blocks, lost) };
 }
 
 /** Measure each UTF-16 character with Range; pdf.js CSS scaling is already reflected here. */

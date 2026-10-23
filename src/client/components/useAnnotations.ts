@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { AnnotationInput, AnnotationMode, Highlight, Paper } from '../../shared/contracts';
-import { AnnotationSession, LASTING_NOTICES, type AnnotationClient, type CardAnchor } from '../lib/annotation-session';
+import { AnnotationSession, LASTING_NOTICES, cardLocked, type AnnotationClient, type CardAnchor } from '../lib/annotation-session';
 import { HIGHLIGHTER_THICKNESS, PEN_WIDTH } from '../lib/annotations';
 import type { EraserSize } from '../lib/eraser';
 import type { AnnotationToolbarProps } from './AnnotationTools';
@@ -77,6 +77,7 @@ export function useAnnotations(client: AnnotationClient, paperKey: string | null
     closeCard: () => session.closeCard(),
     deleteMemo: () => session.deleteMemo(),
     deleteRecord: () => session.deleteRecord(),
+    deleteFromList: (highlightId: string) => session.deleteFromList(highlightId),
     recolor: (color: Highlight['color']) => session.recolor(color),
   }), [session]);
 
@@ -108,10 +109,11 @@ export function useAnnotations(client: AnnotationClient, paperKey: string | null
 
   const card = state.card;
   // A card is a new mount for each record and each new selection, so it opens at its own mark.
+  // It is locked while anything about its record is on its way, a delete from the memo list too.
   const memoCard: { key: string; props: Omit<MemoCardViewProps, 'onAsk'> } | null = card === null ? null : {
     key: card.kind === 'record' ? `record:${card.highlightId}` : `new:${card.anchor?.left}:${card.anchor?.top}`,
     props: {
-      card,
+      card: { ...card, saving: cardLocked(state) },
       record: card.kind === 'record' ? state.highlights.find((h) => h.highlightId === card.highlightId) ?? null : null,
       onText: actions.setMemoText,
       onSave: actions.saveMemo,
@@ -123,5 +125,8 @@ export function useAnnotations(client: AnnotationClient, paperKey: string | null
     },
   };
 
-  return { highlights: state.highlights, setMode, reload: actions.reload, dropTranslation: actions.dropTranslation, open: actions.open, toolbarProps, paneProps, memoCard };
+  // The memo list's deletes, refused with the reason, and the records a request is on its way for.
+  const listDeletes = { busy: state.busy, deleteErrors: state.deleteErrors, onDelete: actions.deleteFromList };
+
+  return { highlights: state.highlights, setMode, reload: actions.reload, dropTranslation: actions.dropTranslation, open: actions.open, toolbarProps, paneProps, memoCard, listDeletes };
 }

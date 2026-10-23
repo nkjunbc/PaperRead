@@ -43,6 +43,22 @@ export interface AnnotationState {
   /** Every pen stroke erased in this session, newest last; an undo brings the newest back. */
   erased: Highlight[];
   restoring: boolean;
+  /** Records a request is on its way for, from their card, the memo list or the eraser, and what
+   * it does: no other request is sent for one until the service has answered. A record being
+   * deleted is still a record until then. */
+  busy: Readonly<Record<string, RecordBusy>>;
+  /** Why the service refused to delete a record from the memo list, by record, until it is asked again. */
+  deleteErrors: Record<string, string>;
+}
+
+/** What is on its way for a record: a change to it, or its delete. */
+export type RecordBusy = 'saving' | 'deleting';
+
+/** True while the card may not change: its own save is on its way, or a request about its
+ * record from anywhere (the memo list, the eraser). */
+export function cardLocked(state: AnnotationState): boolean {
+  const card = state.card;
+  return card !== null && (card.saving || (card.highlightId !== null && state.busy[card.highlightId] !== undefined));
 }
 
 /** Why a selection that marks more lines of a page than a record holds is not saved. */
@@ -51,7 +67,7 @@ export const TOO_MANY_LINES = `한 쪽에서 한 번에 표시할 수 있는 줄
 /** Notices that stay until the next one replaces them; every other notice fades. */
 export const LASTING_NOTICES: readonly string[] = ['저장 중…', '저장하지 못했습니다.', TOO_MANY_LINES];
 
-const EMPTY: AnnotationState = { paperKey: null, highlights: [], pending: [], card: null, notice: '', erased: [], restoring: false };
+const EMPTY: AnnotationState = { paperKey: null, highlights: [], pending: [], card: null, notice: '', erased: [], restoring: false, busy: {}, deleteErrors: {} };
 
 /** True when the card holds writing the reader has not saved. */
 export function cardDirty(card: MemoCard | null, highlights: Highlight[]): boolean {
@@ -82,7 +98,6 @@ export class AnnotationSession {
   /** Counts the new translations confirmed for the paper: the Korean side each one replaced. */
   private translation = 0;
   private loads = 0;
-  private readonly erasing = new Set<string>();
   private readonly listeners = new Set<() => void>();
 
   constructor(private readonly client: AnnotationClient, private readonly onError: (cause: unknown) => void) {}
@@ -126,10 +141,23 @@ export class AnnotationSession {
     return this.state.highlights.some((h) => h.highlightId === highlightId && korean(h));
   }
 
+  /** Send a request about one record, never while another one about it is on its way: the record
+   * is locked until the service answers, and `done`, `failed` and `dropped` find it unlocked. */
+  private sendFor<T>(highlightId: string, what: RecordBusy, request: (paperKey: string) => Promise<T>, done: (value: T) => void, failed: (cause: unknown) => void, dropped: () => void = () => {}): void {
+    if (this.state.paperKey === null || this.state.busy[highlightId] !== undefined) return;
+    const onKorean = this.onKorean(highlightId);
+    this.set({ busy: { ...this.state.busy, [highlightId]: what } });
+    const unlocked = <A extends unknown[]>(then: (...args: A) => void) => (...args: A) => {
+      const { [highlightId]: _settled, ...busy } = this.state.busy;
+      this.set({ busy });
+      then(...args);
+    };
+    this.sendOn(onKorean, request, unlocked(done), unlocked(failed), unlocked(dropped));
+  }
+
   /** Read `paperKey` (null: no paper). Everything still in flight for the previous one is dropped. */
   enter(paperKey: string | null): void {
     this.epoch += 1;
-    this.erasing.clear();
     this.set({ ...EMPTY, paperKey });
     this.reload();
   }
@@ -150,7 +178,8 @@ export class AnnotationSession {
     const pending = this.state.pending.filter((input) => !korean(input));
     const kept = cardOnKorean ? null : card;
     // "Saving" stays only while something on the original is still on its way.
-    const saving = pending.length > 0 || kept?.saving === true;
+    const busyOriginal = Object.keys(this.state.busy).some((highlightId) => !this.onKorean(highlightId));
+    const saving = pending.length > 0 || kept?.saving === true || busyOriginal;
     this.set({
       highlights: this.state.highlights.filter((h) => !korean(h)),
       pending,
@@ -226,7 +255,7 @@ export class AnnotationSession {
 
   private mayReplaceCard(): boolean {
     const card = this.state.card;
-    if (card?.saving) return false;
+    if (cardLocked(this.state)) return false;
     if (cardDirty(card, this.state.highlights)) {
       this.set({ notice: '작성 중인 메모를 먼저 저장하거나 닫아주세요.' });
       return false;
@@ -236,7 +265,7 @@ export class AnnotationSession {
 
   editMemo(): void {
     const card = this.state.card;
-    if (card === null || card.kind !== 'record' || card.saving) return;
+    if (card === null || card.kind !== 'record' || cardLocked(this.state)) return;
     const record = this.state.highlights.find((h) => h.highlightId === card.highlightId);
     if (record?.kind === 'ink') return;
     this.setCard({ editing: true, text: record?.note ?? '', error: null });
@@ -244,19 +273,19 @@ export class AnnotationSession {
 
   setMemoText(text: string): void {
     const card = this.state.card;
-    if (card === null || !card.editing || card.saving) return;
+    if (card === null || !card.editing || cardLocked(this.state)) return;
     this.setCard({ text });
   }
 
   closeCard(): void {
-    if (this.state.card?.saving) return;
+    if (cardLocked(this.state)) return;
     this.set({ card: null });
   }
 
   /** Save the card's memo. A failure keeps the writing in the card and unlocks it. */
   saveMemo(): void {
     const card = this.state.card;
-    if (card === null || !card.editing || card.saving || this.state.paperKey === null) return;
+    if (card === null || !card.editing || cardLocked(this.state) || this.state.paperKey === null) return;
     const note = card.text.trim().length === 0 ? null : card.text;
     if (card.kind === 'new') {
       if (note === null) return;
@@ -274,8 +303,9 @@ export class AnnotationSession {
     const highlightId = card.highlightId!;
     if (this.state.highlights.find((h) => h.highlightId === highlightId)?.kind === 'ink') return;
     this.lock();
-    this.sendOn(
-      this.onKorean(highlightId),
+    this.sendFor(
+      highlightId,
+      'saving',
       (paperKey) => this.client.updateHighlight(paperKey, highlightId, { note }),
       (updated) => this.set({ highlights: this.replace(updated), card: null, notice: note === null ? '메모를 삭제했습니다.' : '메모를 저장했습니다.' }),
       (cause) => this.unlock(cause),
@@ -285,26 +315,28 @@ export class AnnotationSession {
   /** Remove the memo of the open record; its highlight or stroke stays. */
   deleteMemo(): void {
     const card = this.state.card;
-    if (card === null || card.kind !== 'record' || card.saving) return;
+    if (card === null || card.kind !== 'record' || cardLocked(this.state)) return;
     const highlightId = card.highlightId!;
     this.lock();
-    this.sendOn(
-      this.onKorean(highlightId),
+    this.sendFor(
+      highlightId,
+      'saving',
       (paperKey) => this.client.updateHighlight(paperKey, highlightId, { note: null }),
       (updated) => this.set({ highlights: this.replace(updated), card: null, notice: '메모를 삭제했습니다.' }),
       (cause) => this.unlock(cause),
     );
   }
 
-  /** Delete the open record itself, from its own card only. */
+  /** Delete the open record itself, from its own card (or the memo list: `deleteFromList`). */
   deleteRecord(): void {
     const card = this.state.card;
-    if (card === null || card.kind !== 'record' || card.saving) return;
+    if (card === null || card.kind !== 'record' || cardLocked(this.state)) return;
     const highlightId = card.highlightId!;
     const ink = this.state.highlights.find((h) => h.highlightId === highlightId)?.kind === 'ink';
     this.lock();
-    this.sendOn(
-      this.onKorean(highlightId),
+    this.sendFor(
+      highlightId,
+      'deleting',
       (paperKey) => this.client.deleteHighlight(paperKey, highlightId),
       () => this.set({ highlights: this.state.highlights.filter((h) => h.highlightId !== highlightId), card: null, notice: ink ? '필기를 삭제했습니다.' : '하이라이트를 삭제했습니다.' }),
       (cause) => this.unlock(cause),
@@ -314,17 +346,43 @@ export class AnnotationSession {
   /** Change the colour of the open record. */
   recolor(color: Highlight['color']): void {
     const card = this.state.card;
-    if (card === null || card.kind !== 'record' || card.saving) return;
+    if (card === null || card.kind !== 'record' || cardLocked(this.state)) return;
     const highlightId = card.highlightId!;
     this.lock();
-    this.sendOn(
-      this.onKorean(highlightId),
+    this.sendFor(
+      highlightId,
+      'saving',
       (paperKey) => this.client.updateHighlight(paperKey, highlightId, { color }),
       (updated) => {
         this.set({ highlights: this.replace(updated), notice: '색을 바꿨습니다.' });
         this.setCard({ saving: false });
       },
       (cause) => this.unlock(cause),
+    );
+  }
+
+  /**
+   * Delete a highlight or memo from the memo list, or a record that lost its place, pen strokes
+   * included: the request its own card sends, saving as the card does. It stays a record, locked
+   * as being deleted (its card too), until the service answers; a refusal leaves it with the
+   * reason, until it is asked again. A card open on it closes once it is deleted. Nothing is sent
+   * while another request about it is on its way.
+   */
+  deleteFromList(highlightId: string): void {
+    const record = this.state.highlights.find((h) => h.highlightId === highlightId);
+    if (record === undefined || this.state.busy[highlightId] !== undefined) return;
+    const deleted = record.kind === 'ink' ? '필기를 삭제했습니다.' : record.note !== null ? '메모를 삭제했습니다.' : '하이라이트를 삭제했습니다.';
+    const { [highlightId]: _refused, ...deleteErrors } = this.state.deleteErrors;
+    this.set({ deleteErrors, notice: '저장 중…' });
+    this.sendFor(
+      highlightId,
+      'deleting',
+      (paperKey) => this.client.deleteHighlight(paperKey, highlightId),
+      () => {
+        const open = this.state.card?.highlightId === highlightId ? null : this.state.card;
+        this.set({ highlights: this.state.highlights.filter((h) => h.highlightId !== highlightId), card: open, notice: deleted });
+      },
+      (cause) => this.set({ deleteErrors: { ...this.state.deleteErrors, [highlightId]: extractError(cause).message }, notice: '저장하지 못했습니다.' }),
     );
   }
 
@@ -342,21 +400,16 @@ export class AnnotationSession {
    * stroke that carries a memo (an older version allowed one) is left to its card as well. */
   erase(highlightId: string): void {
     const record = this.state.highlights.find((h) => h.highlightId === highlightId);
-    if (record === undefined || record.kind !== 'ink' || (record.note ?? null) !== null || this.erasing.has(highlightId)) return;
-    this.erasing.add(highlightId);
-    this.sendOn(
-      korean(record),
+    if (record === undefined || record.kind !== 'ink' || (record.note ?? null) !== null) return;
+    this.sendFor(
+      highlightId,
+      'deleting',
       (paperKey) => this.client.deleteHighlight(paperKey, highlightId),
       () => {
-        this.erasing.delete(highlightId);
         const card = this.state.card?.highlightId === highlightId ? null : this.state.card;
         this.set({ highlights: this.state.highlights.filter((h) => h.highlightId !== highlightId), erased: [...this.state.erased, record], card, notice: '필기를 지웠습니다.' });
       },
-      (cause) => {
-        this.erasing.delete(highlightId);
-        this.onError(cause);
-      },
-      () => this.erasing.delete(highlightId),
+      (cause) => this.onError(cause),
     );
   }
 

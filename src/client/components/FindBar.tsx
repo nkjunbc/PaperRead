@@ -107,9 +107,10 @@ function matchRanges(runs: readonly { node: DrawnNode; start: number }[], matche
   return ranges;
 }
 
-/** Where a pane must scroll for a result to be in plain view: where it is, when it already is. */
-function revealTop(body: HTMLElement, range: Range): number {
-  const rect = range.getBoundingClientRect();
+/** Where a pane must scroll for a result (or a record chosen in the memo list) to be in plain
+ * view: where it is, when it already is. */
+export function revealTop(body: HTMLElement, target: Pick<Range | Element, 'getBoundingClientRect'>): number {
+  const rect = target.getBoundingClientRect();
   const box = body.getBoundingClientRect();
   if (rect.left < box.left || rect.right > box.right) {
     body.scrollLeft = Math.max(0, body.scrollLeft + rect.left - box.left - (body.clientWidth - rect.width) / 2);
