@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { AppError, Job, JobState, PauseReason, RestartTranslationRequest, Translation, Usage } from '../../shared/contracts';
 import { isTranslated, selectTranslations } from '../../shared/translations';
-import { PaperStore, appError, busy, invalidInput, notFound } from '../store/index';
+import { PaperStore, appError, busy, invalidInput, notFound, type ReextractionRecord } from '../store/index';
 import { isExcludedModel } from '../codex/models';
 
 const EMPTY_USAGE: Usage = { inputTokens: null, outputTokens: null, limits: null, observedAt: null };
@@ -100,6 +100,17 @@ export class JobManager {
     return job;
   }
 
+  /**
+   * The next open of a paper whose re-extraction record is pending puts back the translations
+   * and the model the record holds, and moves only the Korean notes it holds, so translation work
+   * or a Korean note accepted before then would be undone or left on the old paragraph.
+   */
+  assertNoPendingReextraction(paperKey: string): void {
+    if (this.store.pendingReextraction(paperKey) !== null) {
+      throw busy('논문을 다시 읽는 일이 아직 끝나지 않았습니다. 논문을 다시 열어 읽기를 마친 뒤 시도해 주세요.');
+    }
+  }
+
   // ------------------------------------------------------------- lifecycle
 
   /**
@@ -119,6 +130,7 @@ export class JobManager {
     if (paper.status !== 'ready' && paper.status !== 'partial') {
       throw invalidInput(`paper ${paperKey} is not ready for translation (status=${paper.status})`);
     }
+    this.assertNoPendingReextraction(paperKey);
 
     const existing = this.store.getJobForPaper(paperKey);
 
@@ -181,6 +193,7 @@ export class JobManager {
     if (paper.status !== 'ready' && paper.status !== 'partial') {
       throw invalidInput(`paper ${paperKey} is not ready for translation (status=${paper.status})`);
     }
+    this.assertNoPendingReextraction(paperKey);
     const active = this.currentActive();
     if (active !== null && active.paperKey !== paperKey) {
       throw busy(`another translation job is already running for ${active.paperKey}`);
@@ -207,6 +220,7 @@ export class JobManager {
     if (job.state !== 'paused' && job.state !== 'failed') {
       throw invalidInput(`job ${jobId} cannot be resumed from state ${job.state}`);
     }
+    this.assertNoPendingReextraction(job.paperKey);
     const active = this.currentActive();
     if (active !== null && active.jobId !== jobId) {
       throw busy(`another translation job is already running for ${active.paperKey}`);
@@ -229,6 +243,7 @@ export class JobManager {
     const paper = this.store.getPaper(job.paperKey);
     if (paper === null) throw notFound('논문을 찾을 수 없습니다.');
     if (paper.status !== 'ready' && paper.status !== 'partial') throw invalidInput('아직 번역할 수 없는 논문입니다.');
+    this.assertNoPendingReextraction(job.paperKey);
     const active = this.currentActive();
     if (active !== null && active.jobId !== jobId) throw busy('다른 논문의 번역이 진행 중입니다.');
     return this.persist({
@@ -301,18 +316,17 @@ export class JobManager {
 
   /**
    * Invalidate all work tied to the current block identity before the stored
-   * PDF is extracted again. Persist the generation bump before dropping the
-   * job record, so an already-running worker can never accept a late result.
+   * PDF is extracted again. The generation it replaces is committed first, and
+   * nothing changes when that write fails. Persist the generation bump before
+   * dropping the job record, so an already-running worker can never accept a
+   * late result.
    */
-  invalidateForReextraction(paperKey: string): Job | null {
+  invalidateForReextraction(paperKey: string): { prior: ReextractionRecord; invalidated: Job | null } {
+    const prior = this.store.beginReextraction(paperKey);
     const job = this.store.getJobForPaper(paperKey);
-    if (job === null) {
-      this.store.clearDerivedWork(paperKey);
-      return null;
-    }
-    const invalidated = this.cancelJob(job.jobId);
+    const invalidated = job === null ? null : this.cancelJob(job.jobId);
     this.store.clearDerivedWork(paperKey);
-    return invalidated;
+    return { prior, invalidated };
   }
 
   /**
@@ -365,13 +379,15 @@ export class JobManager {
   /**
    * Store a translation result produced by a worker.
    * Returns false (and writes nothing) when the result belongs to a stale
-   * generation or to a job/paper that no longer exists.
+   * generation or to a job/paper that no longer exists, or while a re-extraction
+   * record is pending.
    */
   acceptResult(jobId: string, generation: number, translation: Translation): boolean {
     const job = this.store.getJob(jobId);
     if (job === null) return false;
     if (job.generation !== generation) return false;
     if (this.store.getPaper(job.paperKey) === null) return false;
+    if (this.store.pendingReextraction(job.paperKey) !== null) return false;
 
     this.store.saveTranslation(job.paperKey, translation);
     const fresh = this.store.getJob(jobId);
