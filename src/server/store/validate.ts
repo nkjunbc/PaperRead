@@ -6,6 +6,7 @@ import type {
   Coverage,
   ErrorCode,
   Highlight,
+  AnnotationInput,
   Job,
   JobState,
   Paper,
@@ -81,6 +82,14 @@ function validateRegion(region: unknown, blockId: string): Region {
   return { page: r.page, x: r.x, y: r.y, width: r.width, height: r.height };
 }
 
+export function validateDisplayTitle(value: unknown): string | null {
+  if (value === null) return null;
+  if (typeof value !== 'string' || /[\u0000-\u001f\u007f]/.test(value)) throw invalidInput('표시 제목은 한 줄의 문자열이어야 합니다.');
+  const title = value.trim();
+  if (title.length < 1 || title.length > 300) throw invalidInput('표시 제목은 1~300자로 입력해 주세요.');
+  return title;
+}
+
 /** Validate a Paper, enforcing that ready/partial carry full extraction metadata. */
 export function validatePaper(paper: unknown): Paper {
   if (!paper || typeof paper !== 'object') throw invalidInput('paper must be an object');
@@ -127,6 +136,7 @@ export function validatePaper(paper: unknown): Paper {
     arxivId: p.arxivId,
     version: p.version,
     title: p.title ?? null,
+    ...(p.displayTitle === undefined ? {} : { displayTitle: validateDisplayTitle(p.displayTitle) }),
     authors: [...p.authors],
     sourceUrl: p.sourceUrl,
     pdfSha256: p.pdfSha256 ?? null,
@@ -157,6 +167,21 @@ export function validateBlock(block: unknown, paperKey: string): Block {
     throw invalidInput(`block ${b.blockId}: fontSize must be a finite number in [0,1]`);
   }
   if (!isInt(b.pageOrdinal) || b.pageOrdinal < 0) throw invalidInput(`block ${b.blockId}: pageOrdinal must be a non-negative integer`);
+  let sourceSpans: Block['sourceSpans'];
+  if (b.sourceSpans !== undefined) {
+    if (!Array.isArray(b.sourceSpans) || b.sourceSpans.length > 4000) throw invalidInput('block.sourceSpans must be a bounded array');
+    let previousEnd = 0;
+    sourceSpans = b.sourceSpans.map(span => {
+      if (!span || (span.kind !== 'bold' && span.kind !== 'math') || !isInt(span.start) || !isInt(span.end) || span.start < previousEnd || span.end <= span.start || span.end > b.sourceText.length) throw invalidInput('block.sourceSpans contains an invalid or overlapping text range');
+      if (!Array.isArray(span.regions) || span.regions.length !== 1) throw invalidInput('block.sourceSpans requires one exact source region');
+      const regions = span.regions.map(region => validateRegion(region, b.blockId));
+      for (const region of regions) {
+        if (!b.regions.some(blockRegion => blockRegion.page === region.page) || region.x < 0 || region.y < 0 || region.width <= 0 || region.height <= 0 || region.x + region.width > 1.000001 || region.y + region.height > 1.000001) throw invalidInput('block.sourceSpans region must stay on its source page');
+      }
+      previousEnd = span.end;
+      return { start: span.start, end: span.end, kind: span.kind, regions };
+    });
+  }
 
   return {
     blockId: b.blockId,
@@ -172,6 +197,7 @@ export function validateBlock(block: unknown, paperKey: string): Block {
     fontWeight: b.fontWeight,
     fontSize: b.fontSize,
     pageOrdinal: b.pageOrdinal,
+    ...(sourceSpans === undefined ? {} : { sourceSpans }),
   };
 }
 
@@ -270,6 +296,7 @@ function validateHighlightRect(rect: unknown, page: number, highlightId: string)
     }
   }
   if (r.width <= 0 || r.height <= 0) throw invalidInput(`highlight ${highlightId}: rect width/height must be greater than 0`);
+  if (r.x + r.width > 1 + 1e-9 || r.y + r.height > 1 + 1e-9) throw invalidInput(`highlight ${highlightId}: rect must stay inside its page`);
   return { page: r.page, x: r.x, y: r.y, width: r.width, height: r.height };
 }
 
@@ -305,7 +332,65 @@ export function validateHighlight(highlight: unknown, paperKey: string): Highlig
     note: h.note ?? null,
     createdAt: h.createdAt,
     updatedAt: h.updatedAt,
+    ...validateAnnotationDetails(h),
   };
+}
+
+/** Optional annotation fields remain absent for older records. Never coerce unknown shapes. */
+export function validateAnnotationDetails(value: Record<string, unknown> | AnnotationInput): Pick<AnnotationInput, 'surface'|'kind'|'anchors'|'strokes'|'layoutSignature'> {
+  const details: Pick<AnnotationInput, 'surface'|'kind'|'anchors'|'strokes'|'layoutSignature'> = {};
+  if (value.surface !== undefined) {
+    if (value.surface !== 'original' && value.surface !== 'translation') throw invalidInput('surface must be original or translation');
+    details.surface = value.surface;
+  }
+  if (value.kind !== undefined) {
+    if (value.kind !== 'highlight' && value.kind !== 'ink') throw invalidInput('kind must be highlight or ink');
+    details.kind = value.kind;
+  }
+  if (value.anchors !== undefined) {
+    if (!Array.isArray(value.anchors) || value.anchors.length < 1 || value.anchors.length > 100) throw invalidInput('anchors must contain 1 to 100 entries');
+    details.anchors = value.anchors.map((anchor: unknown) => {
+      if (!anchor || typeof anchor !== 'object') throw invalidInput('anchor must be an object');
+      const a = anchor as Record<string, unknown>;
+      if (!isNonEmptyString(a.blockId) || (a.blockId as string).length > 300 || hasControlChars(a.blockId as string, false)) throw invalidInput('anchor.blockId is invalid');
+      if (typeof a.start !== 'number' || !Number.isSafeInteger(a.start) || a.start < 0 || typeof a.end !== 'number' || !Number.isSafeInteger(a.end) || a.end <= a.start || a.end > 1_000_000) throw invalidInput('anchor offsets are invalid');
+      if (typeof a.quote !== 'string' || a.quote.length < 1 || a.quote.length > 2000 || a.end - a.start !== a.quote.length || hasControlChars(a.quote, true)) throw invalidInput('anchor quote is invalid');
+      if(a.textVersion!==undefined&&a.textVersion!==2)throw invalidInput('anchor text version is invalid');
+      return { blockId: a.blockId as string, start: a.start, end: a.end, quote: a.quote, ...(a.textVersion===2?{textVersion:2 as const}:{}) };
+    });
+    if (details.anchors.reduce((sum, a) => sum + a.quote.length, 0) > 2000) throw invalidInput('anchor quotes are too long');
+  }
+  if (value.strokes !== undefined) {
+    if (!Array.isArray(value.strokes) || value.strokes.length < 1 || value.strokes.length > 20) throw invalidInput('strokes must contain 1 to 20 entries');
+    let pointCount = 0;
+    details.strokes = value.strokes.map((stroke: unknown) => {
+      if (!stroke || typeof stroke !== 'object') throw invalidInput('stroke must be an object');
+      const s = stroke as Record<string, unknown>;
+      if (typeof s.width !== 'number' || !Number.isFinite(s.width) || s.width < 0.0001 || s.width > 0.05) throw invalidInput('stroke width is invalid');
+      if (!Array.isArray(s.points) || s.points.length < 2) throw invalidInput('stroke needs at least two points');
+      pointCount += s.points.length;
+      if (pointCount > 1500) throw invalidInput('too many ink points');
+      const points = s.points.map((point: unknown) => {
+        if (!point || typeof point !== 'object') throw invalidInput('ink point must be an object');
+        const p = point as Record<string, unknown>;
+        if (typeof p.x !== 'number' || typeof p.y !== 'number' || !Number.isFinite(p.x) || !Number.isFinite(p.y) || p.x < 0 || p.x > 1 || p.y < 0 || p.y > 1) throw invalidInput('ink points must be ratios in [0,1]');
+        return { x: p.x, y: p.y };
+      });
+      return { points, width: s.width };
+    });
+  }
+  if (value.layoutSignature !== undefined) {
+    if (typeof value.layoutSignature !== 'string' || !/^[a-f0-9]{8,64}$/.test(value.layoutSignature)) throw invalidInput('layoutSignature is invalid');
+    details.layoutSignature = value.layoutSignature;
+  }
+  if (details.kind === 'ink') {
+    if (!details.strokes || details.anchors) throw invalidInput('ink needs strokes and cannot have text anchors');
+    if (details.surface === 'translation' && !details.layoutSignature) throw invalidInput('translated ink needs a layout signature');
+  } else {
+    if (details.strokes) throw invalidInput('text highlights cannot contain ink');
+    if (details.surface === 'translation' && !details.anchors) throw invalidInput('translated highlights need text anchors');
+  }
+  return details;
 }
 
 // ------------------------------------------------------------------ paper questions
@@ -318,7 +403,7 @@ export const MAX_ANSWER_CHARS = 200_000;
 export const MAX_CHAT_MESSAGES = 400;
 
 const ERROR_CODES: ErrorCode[] = [
-  'INVALID_INPUT', 'NOT_FOUND', 'NETWORK', 'TOO_LARGE', 'UNSUPPORTED_PDF', 'SOURCE_CHANGED', 'AUTH_REQUIRED',
+  'INVALID_INPUT', 'NOT_FOUND', 'NETWORK', 'TOO_LARGE', 'RESPONSE_TOO_LARGE', 'UNSUPPORTED_PDF', 'SOURCE_CHANGED', 'AUTH_REQUIRED',
   'SUBSCRIPTION_REQUIRED', 'QUOTA', 'MODEL_UNAVAILABLE', 'BUSY', 'INVALID_TRANSLATION', 'STORAGE', 'UNSAFE_RUNTIME', 'INTERNAL',
 ];
 /** Only settled messages reach the disk; 'answering' lives in the service's memory. */
@@ -329,6 +414,10 @@ const CHAT_ID = /^[A-Za-z0-9-]{1,100}$/;
  * paper's full text or the system instructions built from it. */
 export interface ConversationRecord {
   conversationId: string;
+  /** The model the conversation keeps, stored with its first question and kept until the
+   * conversation is cleared. Null when the file holds none: an older build wrote it, and those
+   * drop fields they do not know whenever they rewrite it. */
+  modelId: string | null;
   messages: ChatMessage[];
 }
 
@@ -391,6 +480,10 @@ export function validateConversationRecord(record: unknown): ConversationRecord 
   if (!record || typeof record !== 'object') throw invalidInput('conversation must be an object');
   const r = record as ConversationRecord;
   if (typeof r.conversationId !== 'string' || !CHAT_ID.test(r.conversationId)) throw invalidInput('conversation.conversationId is invalid');
+  const modelId = r.modelId === undefined ? null : r.modelId;
+  if (modelId !== null && (typeof modelId !== 'string' || modelId.length === 0 || modelId.length > 100)) {
+    throw invalidInput('conversation.modelId must be a non-empty string of at most 100 characters or null');
+  }
   if (!Array.isArray(r.messages) || r.messages.length > MAX_CHAT_MESSAGES) {
     throw invalidInput(`conversation.messages must be an array of at most ${MAX_CHAT_MESSAGES} entries`);
   }
@@ -400,5 +493,5 @@ export function validateConversationRecord(record: unknown): ConversationRecord 
     if (seen.has(m.messageId)) throw invalidInput(`conversation: duplicate messageId ${m.messageId}`);
     seen.add(m.messageId);
   }
-  return { conversationId: r.conversationId, messages };
+  return { conversationId: r.conversationId, modelId, messages };
 }

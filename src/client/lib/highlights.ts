@@ -45,7 +45,7 @@ export function mergeLineRects(rects: PixelRect[]): PixelRect[] {
       const shorterHeight = Math.min(rect.height, last.height);
       const sameLine = shorterHeight > 0 && verticalOverlap > shorterHeight / 2;
       // Horizontally adjacent or overlapping, not a large gap away.
-      const horizontallyClose = rect.left <= last.left + last.width + 2;
+      const horizontallyClose = rect.left <= last.left + last.width + 2 && last.left <= rect.left + rect.width + 2;
       if (sameLine && horizontallyClose) {
         const left = Math.min(last.left, rect.left);
         const top = Math.min(last.top, rect.top);
@@ -55,7 +55,8 @@ export function mergeLineRects(rects: PixelRect[]): PixelRect[] {
         continue;
       }
     }
-    merged.push({ ...rect });
+    // Native DOMRect exposes geometry on its prototype, so spreading it produces {}.
+    merged.push({ left:rect.left, top:rect.top, width:rect.width, height:rect.height });
   }
   return merged;
 }
@@ -87,6 +88,8 @@ export function rectsToRegions(rects: PixelRect[], pageBox: PixelRect, page: num
 export interface SpanBox {
   rect: PixelRect;
   text: string;
+  /** Actual glyph bounds from DOM Range, including proportional fonts and pdf.js transforms. */
+  glyphs?: { rect: PixelRect; text: string }[];
 }
 
 export interface Point {
@@ -242,7 +245,22 @@ export function sweepSelection(spans: SpanBox[], down: Point, up: Point): { rect
     }
   }
 
-  const lines = picked.filter((row) => row.length > 0);
+  // Clip endpoints by measured glyphs. Selecting one word in a long pdf.js span must not
+  // select that entire span; estimating offsets from average character width also fails
+  // for proportional fonts, math, ligatures and horizontally scaled text layers.
+  const lines = picked.map((row, index) => {
+    const lo = first === last ? Math.min(start.x, end.x) : index === 0 ? start.x : -Infinity;
+    const hi = first === last ? Math.max(start.x, end.x) : index === picked.length - 1 ? end.x : Infinity;
+    return row.flatMap((span): SpanBox[] => {
+      if (!span.glyphs) return [span];
+      const glyphs = span.glyphs.filter((glyph) => {
+        const middle = glyph.rect.left + glyph.rect.width / 2;
+        return middle >= lo && middle <= hi;
+      });
+      if (glyphs.length === 0) return [];
+      return [{ text: glyphs.map((glyph) => glyph.text).join(''), rect: unionRect(glyphs.map((glyph) => glyph.rect)) }];
+    });
+  }).filter((row) => row.length > 0);
   if (lines.length === 0) return null;
   return {
     rects: lines.map((row) => unionRect(row.map((span) => span.rect))),

@@ -4,16 +4,21 @@ import type { AddressInfo } from 'node:net';
 import type { AppError, Block, Highlight, Job, LogoutResult, Paper, PaperChat, PaperListResult, Region, RestartTranslationRequest, Snapshot, Translation, Translator } from '../../shared/contracts';
 import type { AccountSession } from '../codex/auth-contract';
 import { PaperStore, appError, invalidInput, notFound } from '../store/index';
-import { assertSafeKey } from '../store/validate';
+import { assertSafeKey, validateAnnotationDetails } from '../store/validate';
 import { JobManager } from '../jobs/state';
 import { PROMPT_VERSION, TranslationPipeline, type PipelineLogEvent } from '../translation/index';
+import { carryMathMarkers } from '../translation/format';
 import { isExcludedModel } from '../codex/index';
 import { EXTRACTION_VERSION } from '../pdf/index';
 import { extractUploadedPdf, uploadedPaper } from '../pdf/upload';
 import { MAX_PDF_BYTES } from '../../shared/pdf';
+import { isTranslated, selectTranslations } from '../../shared/translations';
 import { ChatService, LOGGED_OUT_ERROR, RESTARTED_ERROR, type ChatLogEvent } from '../chat/index';
 import { HttpError, toHttp } from './errors';
 import { TOKEN_HEADER, assertCredentialHeader, assertLocalRequest } from './guard';
+import { remapTranslationAnchors } from './annotation-anchors';
+import { rejoinedForCarry } from './rejoined-blocks';
+import { PreferencesStore, withPreferredModel } from '../preferences';
 
 export { TOKEN_HEADER, assertLocalRequest, isLoopbackHost, isLoopbackOrigin } from './guard';
 export { HttpError, statusFor, toHttp } from './errors';
@@ -176,7 +181,7 @@ function requireJobIdField(body: Record<string, unknown>, field: string): string
 }
 
 /** Path words kept verbatim in the request log; every other segment is an identifier. */
-const ROUTE_WORDS = new Set(['api', 'papers', 'open', 'upload', 'pdf', 'translation', 'restart', 'highlights', 'chat', 'jobs', 'pause', 'resume', 'connection', 'login', 'logout', 'cancel', 'assets', 'index.html']);
+const ROUTE_WORDS = new Set(['api', 'papers', 'open', 'upload', 'pdf', 'translation', 'restart', 'highlights', 'chat', 'jobs', 'pause', 'resume', 'retry', 'connection', 'login', 'logout', 'cancel', 'assets', 'index.html']);
 
 function requireInt(body: Record<string, unknown>, field: string, min: number): number {
   const value = body[field];
@@ -331,6 +336,8 @@ export function injectToken(html: string, token: string): string {
  */
 export function createApiServer(options: ApiServerOptions): ApiServer {
   const { store, jobs, translator, session, pipeline, acquirer } = options;
+  // App-owned, next to the papers in the data folder; never the official account's settings.
+  const preferences = new PreferencesStore(store.root);
   const log = options.log ?? (() => {});
   const token = options.token ?? randomBytes(32).toString('hex');
   const recovered: string[] = [];
@@ -421,8 +428,24 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     }
 
     // ------------------------------------------------------------- connection
+    if (segments[1] === 'preferences' && segments.length === 2) {
+      if (method === 'GET') return json(preferences.read());
+      if (method === 'POST') {
+        const body = await readJsonBody(request);
+        if (body === null || typeof body !== 'object' || Array.isArray(body)) throw invalidInput('기본 모델 설정을 확인해 주세요.');
+        const id = (body as Record<string, unknown>).defaultModelId;
+        if (id !== null && (typeof id !== 'string' || id.length > 200)) throw invalidInput('기본 모델 설정을 확인해 주세요.');
+        const connection = await translator.connection();
+        return json(preferences.setDefaultModel(id, connection.modelIds));
+      }
+      throw notFound('없는 경로입니다.');
+    }
     if (segments[1] === 'connection') {
-      if (segments.length === 2 && method === 'GET') return json(await translator.connection());
+      if (segments.length === 2 && method === 'GET') return json(withPreferredModel(await translator.connection(), preferences.read().defaultModelId));
+      if (segments.length === 3 && segments[2] === 'refresh' && method === 'POST') {
+        const refreshed = await (translator.refreshModels ? translator.refreshModels() : translator.connection());
+        return json(withPreferredModel(refreshed, preferences.read().defaultModelId));
+      }
       if (segments.length === 3 && segments[2] === 'login' && method === 'POST') {
         // The official program performs the login; this only starts it and hands back the
         // official HTTPS address. No password, cookie or token ever passes through here.
@@ -457,6 +480,12 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
         const paperKey = readPaperKey(segments[2]);
 
         if (segments.length === 3 && method === 'GET') return json(snapshot(paperKey));
+        if (segments.length === 3 && method === 'PATCH') {
+          const body = await readJsonBody(request);
+          if (Object.keys(body).length !== 1 || !Object.hasOwn(body, 'displayTitle')) throw invalidInput('변경할 표시 제목만 보내 주세요.');
+          if (acquiring.has(paperKey)) throw appError('BUSY', '논문을 불러온 뒤 제목을 변경해 주세요.', true);
+          return json(store.renamePaper(paperKey, body.displayTitle));
+        }
         if (segments.length === 3 && method === 'DELETE') {
           if (store.getPaper(paperKey) === null) throw notFound(`저장된 논문이 없습니다: ${paperKey}`);
           // The question answer stops (written as stopped, in case the removal fails) and its
@@ -532,6 +561,24 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
       if (segments.length === 3 && method === 'GET') {
         return json({ job: existing, translations: store.listTranslations(existing.paperKey) });
       }
+      if (segments.length === 4 && segments[3] === 'retry' && method === 'POST') {
+        const job = await locked(async () => {
+          const current = jobs.getJob(jobId);
+          if (current === null) throw notFound('작업을 찾을 수 없습니다.');
+          if (current.state === 'running') throw appError('BUSY', '이 작업의 번역이 이미 진행 중입니다.', true);
+          if (current.state !== 'completed_with_gaps') throw invalidInput('누락된 번역이 있는 완료 작업만 다시 시도할 수 있습니다.');
+          requireReadablePaper(current.paperKey);
+          if (isExcludedModel(current.modelId)) throw appError('MODEL_UNAVAILABLE', '이 작업은 사용하지 않도록 설정된 모델로 만들어져 다시 시도할 수 없습니다.', false);
+          const active = jobs.currentActive();
+          if (active !== null && active.jobId !== jobId) throw appError('BUSY', '다른 논문의 번역이 진행 중입니다. 먼저 일시정지한 뒤 다시 시도해 주세요.', true);
+          await assertAccountReady(current.modelId);
+          await settleLoop(jobId);
+          const retried = jobs.retryIncomplete(jobId);
+          drive(retried);
+          return retried;
+        });
+        return json({ job });
+      }
       if (segments.length === 4 && segments[3] === 'pause' && method === 'POST') {
         // Idempotent: pausing an already paused job just reports it.
         // Persist the pause *before* aborting, so the loop's post-request guard
@@ -547,13 +594,17 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
         }
         const job = await locked(async () => {
           const current = jobs.getJob(jobId) ?? existing;
-          if (current.state === 'running') return current;
-          // Refused before the record changes: a resume while signed out would only create
-          // a running job that pauses itself on its first request.
-          await assertAccountReady(null);
+          // Finished translations remain readable even if their model is no longer
+          // offered. Replaying them never checks an account or starts work.
+          if (current.state === 'running' || current.state === 'completed' || current.state === 'completed_with_gaps') return current;
+          // Refused before the record changes: a resume while signed out, or on a pinned
+          // model no longer offered, would only create a running job that pauses itself on
+          // its first request.
+          await assertAccountReady(current.modelId);
           // A previous loop may still be unwinding after its abort.
           await settleLoop(jobId);
-          // resumeJob keeps the revision's pinned model and prompt version.
+          // resumeJob keeps the revision's pinned model; what is still missing goes out with
+          // the current prompt, and finished paragraphs are never sent again.
           const resumed = jobs.resumeJob(jobId);
           drive(resumed);
           return resumed;
@@ -629,21 +680,26 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
 
     const storedPdf = stored === null ? null : store.getPdf(stored.paperKey);
     let carried: Translation[] = [];
+    let previousModel: string | null = null;
     if (storedPdf !== null) {
       // Finished translations survive the re-extraction wherever the paragraph text did not
       // change (same source hash); they are re-attached to the new block ids afterwards.
       carried = store.listTranslations(stored!.paperKey).filter((t) => t.status === 'completed');
       // Block identity is changing. The old job must not be replayed for the
-      // replacement blocks, and its in-flight result must become stale.
+      // replacement blocks, and its in-flight result must become stale. Its model stays the
+      // revision's model.
       const invalidated = jobs.invalidateForReextraction(stored!.paperKey);
-      if (invalidated !== null) pipeline.abort(invalidated.jobId);
+      if (invalidated !== null) {
+        pipeline.abort(invalidated.jobId);
+        previousModel = invalidated.modelId;
+      }
     }
-    const pending = store.savePaper({ ...(storedPdf === null ? resolved : stored!), status: 'fetching' });
+    const pending = store.savePaper({ ...(storedPdf === null ? resolved : stored!), ...(stored?.displayTitle === undefined ? {} : { displayTitle: stored.displayTitle }), status: 'fetching' });
     if (!acquiring.has(pending.paperKey)) {
       const acquisition = ++nextAcquisition;
       acquiring.set(pending.paperKey, acquisition);
       if (storedPdf === null) void acquireInBackground(pending.paperKey, input, acquisition);
-      else void reextractInBackground(pending.paperKey, storedPdf, acquisition, carried);
+      else void reextractInBackground(pending.paperKey, storedPdf, acquisition, carried, previousModel);
     }
     return pending;
   }
@@ -663,7 +719,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
       store.savePaper({ ...beforeExtraction, status: 'extracting' });
       const { paper, blocks, pdf } = await acquirer.acquire(paperKey, input);
       if (!isCurrentAcquisition(paperKey, acquisition)) return;
-      store.savePaper(paper, pdf);
+      store.savePaper({ ...paper, ...(beforeExtraction.displayTitle === undefined ? {} : { displayTitle: beforeExtraction.displayTitle }) }, pdf);
       if (!isCurrentAcquisition(paperKey, acquisition)) return;
       store.saveBlocks(paperKey, blocks);
     } catch (cause) {
@@ -686,32 +742,51 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     }
   }
 
-  async function reextractInBackground(paperKey: string, pdf: Buffer, acquisition: number, carried: Translation[] = []): Promise<void> {
+  async function reextractInBackground(paperKey: string, pdf: Buffer, acquisition: number, carried: Translation[], previousModel: string | null): Promise<void> {
     try {
       const current = store.getPaper(paperKey);
       if (current === null || !isCurrentAcquisition(paperKey, acquisition)) return;
+      const previousBlocks = store.listBlocks(paperKey);
       store.savePaper({ ...current, status: 'extracting' });
       const { paper, blocks } = await acquirer.reextract(current, pdf);
       if (!isCurrentAcquisition(paperKey, acquisition)) return;
-      store.savePaper(paper);
+      store.savePaper({ ...paper, ...(current.displayTitle === undefined ? {} : { displayTitle: current.displayTitle }) });
       if (!isCurrentAcquisition(paperKey, acquisition)) return;
       store.saveBlocks(paperKey, blocks);
-      // The same source hash is the same sentence: its finished translation is kept under the
-      // new block id, so a format change never re-sends what was already translated.
-      const byHash = new Map(carried.map((t) => [t.sourceHash, t] as const));
+      // The same source hash is the same sentence: the translation the reader saw on the old
+      // paragraph (chosen as the Korean page chooses, on the job's model) is kept under the new
+      // block id, so a format change never re-sends what was already translated.
+      const shown = selectTranslations(previousBlocks, carried, previousModel);
+      // A paragraph changed only by putting back words broken at a line end is the same sentence
+      // too: it is matched as it now reads.
+      const matched = rejoinedForCarry(previousBlocks, blocks, shown);
+      const byHash = new Map<string, { block: Block; translation: Translation }>();
+      for (const [index, block] of previousBlocks.entries()) {
+        const translation = shown.get(block.blockId);
+        if (translation !== undefined && isTranslated(block, translation)) byHash.set(matched[index].sourceHash, { block: matched[index], translation });
+      }
       const kept: Translation[] = [];
       for (const block of blocks) {
         if (!block.translatable) continue;
         const previous = byHash.get(block.sourceHash);
         if (previous === undefined) continue;
+        const text = carryMathMarkers(previous.block, block, previous.translation.text!, previous.translation.promptVersion);
+        if (text === null) continue;
         if (!isCurrentAcquisition(paperKey, acquisition)) return;
-        kept.push(store.saveTranslation(paperKey, { ...previous, blockId: block.blockId }));
+        kept.push(store.saveTranslation(paperKey, { ...previous.translation, blockId: block.blockId, sourceHash: block.sourceHash, text }));
       }
-      // The revision stays pinned to the model that made what it kept: a new job on that model
-      // waits, paused, for the user to translate the paragraphs that are still missing.
-      const pins = new Set(kept.map((t) => `${t.modelId}\n${t.promptVersion}`));
-      if (kept.length > 0 && pins.size === 1 && isCurrentAcquisition(paperKey, acquisition)) {
-        jobs.adoptCarriedTranslations(paperKey, kept[0]!.modelId, kept[0]!.promptVersion);
+      for (const annotation of remapTranslationAnchors(store.listHighlights(paperKey), matched, blocks, [...shown.values()], kept)) {
+        if (!isCurrentAcquisition(paperKey, acquisition)) return;
+        store.saveHighlight(paperKey, annotation);
+      }
+      // The revision keeps the model of the job it had, even when no paragraph survived: a new
+      // job on that model waits, paused, for the user to translate the paragraphs that are still
+      // missing, which then go out with the current prompt. Without a previous job, the model
+      // that made everything kept pins it the same way; otherwise the saved default applies.
+      const models = new Set(kept.map((t) => t.modelId));
+      const model = previousModel ?? (models.size === 1 ? kept[0]!.modelId : null);
+      if (model !== null && isCurrentAcquisition(paperKey, acquisition)) {
+        jobs.adoptCarriedTranslations(paperKey, model, PROMPT_VERSION);
       }
     } catch (cause) {
       const { error } = toHttp(cause);
@@ -751,9 +826,10 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
       rects: requireHighlightRects(body, page),
       text: requireHighlightText(body),
       color: readHighlightColor(body, 'yellow'),
-      note: null,
+      note: readOptionalNote(body) ?? null,
       createdAt: now,
       updatedAt: now,
+      ...validateAnnotationDetails(body),
     };
     return store.saveHighlight(paperKey, highlight);
   }
@@ -792,7 +868,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
    * The account gate every generation entry point shares, checked before any job record
    * changes: a signed-out start would otherwise create a running job that only pauses
    * itself on its first request. `modelId` is checked against the live catalogue when a
-   * fresh job is about to pin it; a resume keeps its pinned model and passes null.
+   * fresh job is about to pin it; a resume checks its already pinned model.
    */
   async function assertAccountReady(modelId: string | null): Promise<void> {
     const connection = await translator.connection();
@@ -834,7 +910,13 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
       if (existing !== null && (existing.state === 'running' || existing.state === 'completed' || existing.state === 'completed_with_gaps')) {
         return existing;
       }
-      await assertAccountReady(existing === null ? modelId : null);
+      // startJob resumes a saved job with its pinned model. Check that actual model as
+      // well, so submitting another id cannot revive a job on a forbidden model.
+      const effectiveModelId = existing?.modelId ?? modelId;
+      if (isExcludedModel(effectiveModelId)) {
+        throw appError('MODEL_UNAVAILABLE', '이 작업은 사용하지 않도록 설정된 모델로 만들어져 재개할 수 없습니다. 새로 번역해 주세요.', false);
+      }
+      await assertAccountReady(effectiveModelId);
       const job = jobs.startJob(paperKey, modelId, PROMPT_VERSION);
       drive(job);
       return job;
@@ -870,6 +952,8 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
         receipt.modelId === request.modelId &&
         receipt.promptVersion === PROMPT_VERSION
       ) {
+        // The receipt's model is the request's, already refused above when forbidden.
+        if (existing.state === 'completed' || existing.state === 'completed_with_gaps') return existing;
         drive(existing);
         return existing;
       }

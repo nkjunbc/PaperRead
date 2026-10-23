@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { AppError, Job, JobState, PauseReason, RestartTranslationRequest, Translation, Usage } from '../../shared/contracts';
+import { isTranslated, selectTranslations } from '../../shared/translations';
 import { PaperStore, appError, busy, invalidInput, notFound } from '../store/index';
+import { isExcludedModel } from '../codex/models';
 
 const EMPTY_USAGE: Usage = { inputTokens: null, outputTokens: null, limits: null, observedAt: null };
 
@@ -24,7 +26,9 @@ function nowIso(): string {
  *  - exactly one active (running) job across the whole app; no automatic queue
  *  - starting the same paper again returns the existing job (never a duplicate)
  *  - starting a different paper while one runs raises BUSY
- *  - the first job for a revision pins modelId/promptVersion for that revision
+ *  - the first job for a revision pins modelId for that revision; its promptVersion only
+ *    labels the rules it started with (a completed translation made with an older prompt
+ *    still counts as finished, and new requests always use the current prompt)
  *  - a finished job is returned as-is instead of re-running
  *  - cancel/delete bump `generation`, so results from an older generation are
  *    discarded rather than written
@@ -77,17 +81,9 @@ export class JobManager {
   }
 
   private countCompleted(job: Job): number {
-    const translations = this.store.listTranslations(job.paperKey);
-    return [...this.translatablePages(job.paperKey).values()].filter((blocks) =>
-      blocks.every((b) => translations.some(
-        (t) =>
-          t.blockId === b.blockId &&
-          t.sourceHash === b.sourceHash &&
-          t.modelId === job.modelId &&
-          t.promptVersion === job.promptVersion &&
-          t.status === 'completed',
-      )),
-    ).length;
+    const pages = [...this.translatablePages(job.paperKey).values()];
+    const selected = selectTranslations(pages.flat(), this.store.listTranslations(job.paperKey), job.modelId);
+    return pages.filter((blocks) => blocks.every((b) => isTranslated(b, selected.get(b.blockId)))).length;
   }
 
   private countTranslatable(paperKey: string): number {
@@ -141,7 +137,7 @@ export class JobManager {
       if (!RESTARTABLE_STATES.includes(existing.state)) {
         throw invalidInput(`job ${existing.jobId} cannot be started from state ${existing.state}`);
       }
-      // The revision's pinned model/prompt wins over whatever was requested.
+      // The revision's pinned model wins over whatever was requested.
       return this.persist({
         ...existing,
         state: 'running',
@@ -224,6 +220,28 @@ export class JobManager {
     });
   }
 
+  /** Explicitly retry gaps, preserving every completed result and the pinned identity. */
+  retryIncomplete(jobId: string): Job {
+    const job = this.requireJob(jobId);
+    if (job.state === 'running') throw busy('이 작업의 번역이 이미 진행 중입니다.');
+    if (job.state !== 'completed_with_gaps') throw invalidInput('누락된 번역이 있는 완료 작업만 다시 시도할 수 있습니다.');
+    if (isExcludedModel(job.modelId)) throw appError('MODEL_UNAVAILABLE', '이 작업의 모델은 사용하지 않도록 설정되어 있습니다. 다른 모델로 새로 번역해 주세요.', false);
+    const paper = this.store.getPaper(job.paperKey);
+    if (paper === null) throw notFound('논문을 찾을 수 없습니다.');
+    if (paper.status !== 'ready' && paper.status !== 'partial') throw invalidInput('아직 번역할 수 없는 논문입니다.');
+    const active = this.currentActive();
+    if (active !== null && active.jobId !== jobId) throw busy('다른 논문의 번역이 진행 중입니다.');
+    return this.persist({
+      ...job,
+      state: 'running',
+      generation: job.generation + 1,
+      pauseReason: null,
+      currentPage: null,
+      completedBlocks: this.countCompleted(job),
+      totalTranslatableBlocks: this.countTranslatable(job.paperKey),
+    });
+  }
+
   /** Mark a running job as cleanly completed. */
   completeJob(jobId: string): Job {
     const job = this.requireJob(jobId);
@@ -240,7 +258,7 @@ export class JobManager {
 
   /**
    * Close out a running job, choosing `completed` only when every translatable
-   * block has a completed translation for the pinned model/prompt. Any failed,
+   * block has a completed translation for the pinned model, whichever prompt made it. Any failed,
    * unsupported or never-attempted block yields `completed_with_gaps`.
    *
    * A block the extractor marked `translatable:false` (figure, table, reference,
@@ -298,9 +316,9 @@ export class JobManager {
   }
 
   /**
-   * After a re-extraction carried finished translations over to the new blocks, pin a fresh
-   * job to the model and prompt version that made them: the revision keeps its model, and a
-   * resume sends only the paragraphs that lost their translation. Nothing is sent here — the
+   * After a re-extraction carried finished translations over to the new blocks (or none),
+   * pin a fresh job to the revision's model: the revision keeps its model, and a resume sends
+   * only the paragraphs that lost their translation, with the current prompt. Nothing is sent here — the
    * job starts completed when every page is covered, otherwise paused(reextracted) until the
    * user resumes it. The new job id also keeps any late answer for the old blocks out.
    */

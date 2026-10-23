@@ -1,15 +1,18 @@
-export type ErrorCode = 'INVALID_INPUT'|'NOT_FOUND'|'NETWORK'|'TOO_LARGE'|'UNSUPPORTED_PDF'|'SOURCE_CHANGED'|'AUTH_REQUIRED'|'SUBSCRIPTION_REQUIRED'|'QUOTA'|'MODEL_UNAVAILABLE'|'BUSY'|'INVALID_TRANSLATION'|'STORAGE'|'UNSAFE_RUNTIME'|'INTERNAL';
+export type ErrorCode = 'INVALID_INPUT'|'NOT_FOUND'|'NETWORK'|'TOO_LARGE'|'RESPONSE_TOO_LARGE'|'UNSUPPORTED_PDF'|'SOURCE_CHANGED'|'AUTH_REQUIRED'|'SUBSCRIPTION_REQUIRED'|'QUOTA'|'MODEL_UNAVAILABLE'|'BUSY'|'INVALID_TRANSLATION'|'STORAGE'|'UNSAFE_RUNTIME'|'INTERNAL';
 export interface AppError { code:ErrorCode; message:string; retryable:boolean }
 export interface Coverage { totalPages:number; textPages:number; unsupportedPages:number[] }
-export interface Paper { paperKey:string; sourceKind?:'arxiv'|'publication'|'local'; arxivId:string|null; version:number|null; title:string|null; authors:string[]; sourceUrl:string; pdfSha256:string|null; pageCount:number|null; extractionVersion:string|null; status:'fetching'|'extracting'|'ready'|'partial'|'unsupported'|'failed'; coverage:Coverage|null; createdAt:string }
+export interface Paper { paperKey:string; sourceKind?:'arxiv'|'publication'|'local'; arxivId:string|null; version:number|null; title:string|null; displayTitle?:string|null; authors:string[]; sourceUrl:string; pdfSha256:string|null; pageCount:number|null; extractionVersion:string|null; status:'fetching'|'extracting'|'ready'|'partial'|'unsupported'|'failed'; coverage:Coverage|null; createdAt:string }
 export interface Region { page:number; x:number; y:number; width:number; height:number }
-export interface Block { blockId:string; paperKey:string; order:number; kind:'heading'|'paragraph'|'caption'|'equation'|'figure'|'table'|'reference'|'unsupported'; sourceText:string; sourceHash:string; regions:Region[]; alignment:'exact'|'uncertain'; translatable:boolean; fontFamily:'serif'|'sans'; fontWeight:'normal'|'bold'; fontSize:number; pageOrdinal:number }
+/** Exact UTF-16 source offsets; math regions preserve the original PDF appearance. */
+export interface SourceSpan { start:number; end:number; kind:'bold'|'math'; regions:Region[] }
+export interface Block { blockId:string; paperKey:string; order:number; kind:'heading'|'paragraph'|'caption'|'equation'|'figure'|'table'|'reference'|'unsupported'; sourceText:string; sourceHash:string; regions:Region[]; alignment:'exact'|'uncertain'; translatable:boolean; fontFamily:'serif'|'sans'; fontWeight:'normal'|'bold'; fontSize:number; pageOrdinal:number; sourceSpans?:SourceSpan[] }
 export interface Translation { blockId:string; sourceHash:string; modelId:string; promptVersion:string; status:'pending'|'running'|'completed'|'failed'|'unsupported'; text:string|null; error:AppError|null; completedAt:string|null }
 export interface Usage { inputTokens:number|null; outputTokens:number|null; limits:Record<string,unknown>|null; observedAt:string|null }
 export type JobState = 'idle'|'running'|'paused'|'completed'|'completed_with_gaps'|'failed';
 export type PauseReason = null|'user'|'auth'|'quota'|'network'|'model_unavailable'|'interrupted'|'reextracted';
 export interface Job { jobId:string; paperKey:string; modelId:string; promptVersion:string; generation:number; state:JobState; pauseReason:PauseReason; completedBlocks:number; totalTranslatableBlocks:number; usage:Usage; updatedAt:string; currentPage:number|null }
-export interface Connection { status:'missing'|'signed_out'|'subscription'|'api_key'|'unavailable'; modelIds:string[]; defaultModelId:string|null; limits:Record<string,unknown>|null }
+export interface Connection { status:'missing'|'signed_out'|'subscription'|'api_key'|'unavailable'; modelIds:string[]; defaultModelId:string|null; limits:Record<string,unknown>|null; modelsCheckedAt?:string|null; preferredModelId?:string|null; preferredModelUnavailable?:boolean }
+export interface ModelPreferences { defaultModelId:string|null }
 /** App-owned login attempt identifier; never exposes the official login id or credentials. */
 export interface LoginAttempt {
   loginId: string;
@@ -24,20 +27,32 @@ export interface RestartTranslationRequest { modelId: string; requestId: string;
 export interface RestartTranslationResult { job: Job }
 export interface PaperListResult { papers: Paper[] }
 export interface Snapshot { paper:Paper; blocks:Block[]; translations:Translation[]; job:Job|null }
-export interface Highlight { highlightId:string; paperKey:string; page:number; rects:Region[]; text:string; color:'yellow'|'green'|'blue'|'pink'; note:string|null; createdAt:string; updatedAt:string }
+export type AnnotationSurface = 'original'|'translation';
+export type AnnotationMode = 'select'|'pen'|'erase';
+/** UTF-16 offsets and the exact selected text in one translated paragraph. */
+export interface TextAnchor { blockId:string; start:number; end:number; quote:string; /** Version 2 includes selectable source math in offsets. Absent: legacy image-only math. */ textVersion?:2 }
+export interface InkPoint { x:number; y:number }
+export interface InkStroke { points:InkPoint[]; width:number }
+export interface AnnotationInput {
+  page:number; rects:Region[]; text:string; color?:'yellow'|'green'|'blue'|'pink'; note?:string|null;
+  surface?:AnnotationSurface; kind?:'highlight'|'ink'; anchors?:TextAnchor[]; strokes?:InkStroke[]; layoutSignature?:string;
+}
+/** Missing surface/kind identifies a legacy original-PDF highlight. */
+export interface Highlight extends AnnotationInput { highlightId:string; paperKey:string; color:'yellow'|'green'|'blue'|'pink'; note:string|null; createdAt:string; updatedAt:string }
 export type ApiResult<T> = {data:T}|{error:AppError};
-export interface TranslationInput { block:Block; modelId:string; context:string; signal?:AbortSignal }
+export interface TranslationInput { block:Block; modelId:string; context:string; signal?:AbortSignal; promptVersion?:string }
 export interface TranslationOutput { text:string; usage:Usage }
 /** One paragraph inside a page-batch request, tagged with its request-local number so the
  * response can be matched back to it regardless of return order or partial dropout. */
 export interface TranslationPageParagraph { number:number; block:Block }
-export interface TranslationPageInput { paragraphs:TranslationPageParagraph[]; modelId:string; context:string; signal?:AbortSignal }
+export interface TranslationPageInput { paragraphs:TranslationPageParagraph[]; modelId:string; context:string; signal?:AbortSignal; promptVersion?:string }
 /** One matched-back result. A number missing from the response simply has no entry here —
  * that is not an error, it is a paragraph to retry. */
 export interface TranslationPageResultItem { number:number; text:string }
 export interface TranslationPageOutput { results:TranslationPageResultItem[]; usage:Usage }
 export interface Translator {
   connection():Promise<Connection>;
+  refreshModels?():Promise<Connection>;
   translate(input:TranslationInput):Promise<TranslationOutput>;
   /** One request for every translatable paragraph on a page, numbered and matched back by number. */
   translatePage(input:TranslationPageInput):Promise<TranslationPageOutput>;
@@ -64,8 +79,10 @@ export interface ChatMessage {
   usage:ChatUsage|null;
   createdAt:string;
 }
-/** A paper's single question conversation, as the service holds it. */
-export interface Conversation { paperKey:string; conversationId:string; messages:ChatMessage[]; answering:boolean }
+/** A paper's single question conversation, as the service holds it. `modelId` is the model the
+ * conversation keeps: the one its first question was asked of, stored with it and kept whatever
+ * became of that answer, until the conversation is cleared; null while none is kept yet. */
+export interface Conversation { paperKey:string; conversationId:string; messages:ChatMessage[]; answering:boolean; modelId:string|null }
 export interface AskRequest {
   question:string;
   modelId:string;

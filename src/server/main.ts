@@ -193,7 +193,7 @@ export async function startService(options: ServiceOptions = {}): Promise<Servic
   // lives in the app-owned `.codex-home` under the data directory, never in ~/.codex.
   const official = createOfficialRpcFactory(() => startOfficialRpc({ dataDirectory }));
   const translator = new CodexTranslator(official);
-  const session = new AccountAuthenticator(official);
+  const session = new AccountAuthenticator(official, { onLoginCompleted: () => translator.refreshModels() });
   const log = options.log ?? ((event) => process.stdout.write(`${JSON.stringify(event)}\n`));
   // Isolation evidence that outlived its turn still ends the process (CodexTranslator); here it is
   // also recorded, with the path only — never any provider text.

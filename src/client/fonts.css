@@ -1,0 +1,9 @@
+/* Pretendard Variable v1.3.9, bundled unchanged under the SIL Open Font License.
+   Source and license: assets/fonts/README.md and assets/fonts/OFL.txt. */
+@font-face {
+  font-family: 'Pretendard';
+  font-style: normal;
+  font-weight: 45 920;
+  font-display: swap;
+  src: url('./assets/fonts/PretendardVariable.woff2') format('woff2');
+}

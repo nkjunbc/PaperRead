@@ -1,13 +1,14 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import type { Block, Highlight, Job, Paper, RestartTranslationRequest, Translation } from '../../shared/contracts';
+import type { Block, ChatMessage, Highlight, Job, Paper, RestartTranslationRequest, Translation } from '../../shared/contracts';
 import { atomicWriteBytes, readRecord, writeRecord } from './atomic';
 import { AppErrorException, appError, busy, invalidInput, notFound, storageError } from './errors';
 import {
   assertSafeKey,
   validateBlock,
   validateConversationRecord,
+  validateDisplayTitle,
   validateHighlight,
   validateJob,
   validatePaper,
@@ -148,6 +149,19 @@ export class PaperStore {
     }
     writeRecord(join(dir, PAPER_FILE), validated);
     return validated;
+  }
+
+  /** Update only the reader-owned title, without recreating deleted data or rewriting other records. */
+  renamePaper(paperKey: string, displayTitle: unknown): Paper {
+    const title = validateDisplayTitle(displayTitle);
+    const file = join(this.paperDir(paperKey), PAPER_FILE);
+    const record = readRecord<Paper>(file);
+    if (record === null) throw notFound('논문을 찾을 수 없습니다.');
+    const current = validatePaper(record);
+    if (current.status === 'fetching' || current.status === 'extracting') throw busy('논문을 불러온 뒤 제목을 변경해 주세요.');
+    const updated = { ...current, displayTitle: title };
+    writeRecord(file, updated);
+    return updated;
   }
 
   /** Commit PDF bytes plus the marker that records "this revision owns a PDF". */
@@ -316,24 +330,6 @@ export class PaperStore {
     assertSafeKey(paperKey);
     this.assertTranslationReadable(paperKey);
     return this.listTranslationsRaw(paperKey);
-  }
-
-  /**
-   * Find a reusable completed translation. Reuse requires an exact match on
-   * blockId, sourceHash, modelId and promptVersion — a changed source hash
-   * always forces a fresh translation.
-   */
-  findReusableTranslation(
-    paperKey: string,
-    blockId: string,
-    sourceHash: string,
-    modelId: string,
-    promptVersion: string,
-  ): Translation | null {
-    const id = translationId({ blockId, sourceHash, modelId, promptVersion });
-    return (
-      this.listTranslations(paperKey).find((t) => t.status === 'completed' && t.text !== null && translationId(t) === id) ?? null
-    );
   }
 
   // ------------------------------------------------------------------ job
@@ -658,16 +654,39 @@ export class PaperStore {
   }
 
   /**
-   * Replace the paper's conversation in one atomic commit. Only settled messages are
-   * stored. A paper that no longer exists is not recreated by a late answer.
+   * Start the paper's conversation: its first question and the model it keeps, in one atomic
+   * commit. Never replaces a conversation file, not even one that cannot be read (it reads as no
+   * conversation): only deleteConversation (새 대화) removes that.
    */
-  saveConversation(paperKey: string, record: ConversationRecord): ConversationRecord {
+  createConversation(paperKey: string, conversationId: string, modelId: string, question: ChatMessage): ConversationRecord {
     assertSafeKey(paperKey);
-    const validated = validateConversationRecord(record);
+    const validated = validateConversationRecord({ conversationId, modelId, messages: [question] });
+    if (validated.modelId === null || validated.messages[0]!.role !== 'user') throw invalidInput('a conversation starts with a question and the model it keeps');
     if (readRecord<unknown>(join(this.root, paperKey, PAPER_FILE)) === null) throw notFound(`paper not found: ${paperKey}`);
-    const dir = this.ensurePaperDir(paperKey);
-    writeRecord(join(dir, CHAT_FILE), validated);
+    const file = join(this.ensurePaperDir(paperKey), CHAT_FILE);
+    if (existsSync(file)) {
+      throw appError('STORAGE', '저장된 대화를 읽지 못해 질문을 저장하지 않았습니다. 잠시 후 다시 시도해 주세요. 계속되면 새 대화를 시작해 주세요.', true);
+    }
+    writeRecord(file, validated);
     return validated;
+  }
+
+  /**
+   * Replace the messages of the stored conversation `conversationId` in one atomic commit. Only
+   * settled messages are stored. The conversation keeps the model stored with it; `modelId` only
+   * fills one a file holds none of (see ConversationRecord). A conversation that is gone,
+   * unreadable or another one is not written: a late answer never brings a cleared conversation
+   * or a deleted paper back.
+   */
+  replaceConversationMessages(paperKey: string, conversationId: string, messages: ChatMessage[], modelId: string | null): ConversationRecord {
+    assertSafeKey(paperKey);
+    const validated = validateConversationRecord({ conversationId, modelId, messages });
+    if (readRecord<unknown>(join(this.root, paperKey, PAPER_FILE)) === null) throw notFound(`paper not found: ${paperKey}`);
+    const stored = this.getConversation(paperKey);
+    if (stored === null || stored.conversationId !== conversationId) throw notFound(`conversation not found: ${conversationId}`);
+    const record: ConversationRecord = { conversationId, modelId: stored.modelId ?? validated.modelId, messages: validated.messages };
+    writeRecord(join(this.root, paperKey, CHAT_FILE), record);
+    return record;
   }
 
   /** Remove the paper's conversation. Returns true when a file was actually removed. */

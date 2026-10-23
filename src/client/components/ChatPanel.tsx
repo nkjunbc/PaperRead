@@ -1,6 +1,8 @@
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type JSX, type KeyboardEvent, type RefObject } from 'react';
 import type { AppError, ChatMessage, Connection, Conversation, Paper } from '../../shared/contracts';
 import { extractError, type ApiClient } from '../lib/api';
+import { paperTitle as displayedPaperTitle } from '../lib/paper';
+import { preferredModelFallback } from '../lib/status';
 import {
   CHAT_SEND_HINT,
   POLL_START,
@@ -10,7 +12,6 @@ import {
   chatBlockedReason,
   chatErrorText,
   composerKeyAction,
-  conversationModel,
   effectiveModel,
   followAfterScroll,
   imeOwnsKey,
@@ -19,11 +20,13 @@ import {
   lastAssistant,
   needsAccount,
   nextPoll,
+  pinnedModelNotice,
   pollInTrouble,
   questionCounter,
   questionCounterLabel,
   questionParts,
   retryQuestion,
+  recoverQuestionDraft,
   withSuggestion,
   type ChatBlock,
 } from '../lib/chat';
@@ -86,7 +89,7 @@ function QuoteBlock({ text }: { text: string }): JSX.Element {
   );
 }
 
-function QuestionBubble({ text, pending = false }: { text: string; pending?: boolean }): JSX.Element {
+function QuestionBubble({ text, pending = false, onReuse }: { text: string; pending?: boolean; onReuse?: (text: string) => void }): JSX.Element {
   return (
     <article className={`msg msg--question${pending ? ' is-pending' : ''}`} aria-label="내 질문">
       {questionParts(text).map((part, index) =>
@@ -98,6 +101,7 @@ function QuestionBubble({ text, pending = false }: { text: string; pending?: boo
           </p>
         ),
       )}
+      {!pending ? <footer className="msg__question-tools"><CopyButton text={text} label="질문 복사" />{onReuse ? <button type="button" onClick={() => onReuse(text)}>다듬어 질문하기</button> : null}</footer> : null}
     </article>
   );
 }
@@ -105,11 +109,6 @@ function QuestionBubble({ text, pending = false }: { text: string; pending?: boo
 function Preparing(): JSX.Element {
   return (
     <p className="typing">
-      <span className="typing__dots" aria-hidden="true">
-        <i />
-        <i />
-        <i />
-      </span>
       <span>답변을 준비하는 중</span>
     </p>
   );
@@ -138,7 +137,7 @@ function Answer({ message, canRetry, retryDisabled, retrying, onRetry, onOpenAcc
       {ended && retrying ? <Preparing /> : null}
       {ended && !retrying ? (
         <div className={`msg__notice${message.status === 'failed' ? ' msg__notice--error' : ''}`}>
-          <p>{message.status === 'failed' ? (error === null ? '답변을 받지 못했습니다.' : chatErrorText(error)) : hasText ? '답변을 중간에 멈췄습니다.' : '답변을 멈췄습니다.'}</p>
+          <p>{message.status === 'failed' ? (error === null ? '답변을 받지 못했습니다.' : chatErrorText(error, message.modelId !== null)) : hasText ? '답변을 중간에 멈췄습니다.' : '답변을 멈췄습니다.'}</p>
           {/* No empty action row: a notice without actions keeps its words the full width. */}
           {accountAction || canRetry ? (
             <div className="msg__notice-actions">
@@ -190,6 +189,9 @@ const MemoAnswer = memo(Answer, (before, after) => {
 // --------------------------------------------------------------------- view
 
 export interface ChatViewProps {
+  paperTitle?: string | null;
+  failedDraft?: string | null;
+  onRestoreFailed?(): void;
   conversation: Conversation | null;
   /** The first read of the conversation is still in flight. */
   loading: boolean;
@@ -198,6 +200,8 @@ export interface ChatViewProps {
   blocked: ChatBlock | null;
   modelIds: readonly string[];
   modelId: string;
+  /** Said under the model choice, e.g. that the saved default cannot be used. */
+  modelNotice?: string | null;
   draft: string;
   sending: PendingQuestion | null;
   stopping: boolean;
@@ -248,6 +252,13 @@ export function ChatView(props: ChatViewProps): JSX.Element {
   const trimmed = draft.trim();
   const canSend = blocked === null && !answering && sending === null && modelId !== '' && trimmed.length > 0 && draft.length <= QUESTION_LIMIT;
   const retryable = retryQuestion(conversation) !== null;
+  const keepsModel = conversation !== null && conversation.modelId !== null;
+  // An empty conversation has nothing to clear, unless asking failed on storage: the stored
+  // conversation may be one that cannot be read (it reads as empty), and clearing removes it.
+  const canClear = messages.length > 0 || askError?.code === 'STORAGE';
+  // The conversation's own model stays shown when the catalogue no longer offers it: it is the
+  // model the next question goes to, and is refused for.
+  const choices = modelId !== '' && !modelIds.includes(modelId) ? [modelId, ...modelIds] : modelIds;
   const lastIndex = messages.length - 1;
   // A failed read while a conversation is on screen: it stays readable, the notice says why it may be stale.
   const staleError = conversation !== null ? loadError : null;
@@ -266,8 +277,8 @@ export function ChatView(props: ChatViewProps): JSX.Element {
         <h2 className="chat__title">이 논문에 질문</h2>
         <div className="chat__tools">
           <select className="chat__model" aria-label="답변 모델" title="답변 모델" value={modelId} disabled={modelIds.length === 0} onChange={(event) => props.onModelChange(event.target.value)}>
-            {modelIds.length === 0 ? <option value="">사용 가능한 모델 없음</option> : null}
-            {modelIds.map((id) => (
+            {choices.length === 0 ? <option value="">사용 가능한 모델 없음</option> : null}
+            {choices.map((id) => (
               <option key={id} value={id}>
                 {id}
               </option>
@@ -278,7 +289,7 @@ export function ChatView(props: ChatViewProps): JSX.Element {
             type="button"
             className="chat__new"
             onClick={confirmingClear ? props.onCancelClear : props.onRequestClear}
-            disabled={messages.length === 0 || answering || sending !== null}
+            disabled={!canClear || answering || sending !== null}
             aria-expanded={confirmingClear}
             aria-controls={confirmingClear ? confirmId : undefined}
             title={answering ? '답변이 끝나거나 멈춘 뒤 새 대화를 시작할 수 있습니다.' : '새 대화'}
@@ -290,6 +301,7 @@ export function ChatView(props: ChatViewProps): JSX.Element {
             <IconClose size={18} />
           </button>
         </div>
+        {props.modelNotice ? <p className="model-notice" role="status">{props.modelNotice}</p> : null}
         {confirmingClear ? (
           // Floats under the header, so opening it moves nothing in the conversation.
           <div id={confirmId} className="chat__confirm" role="group" aria-labelledby={promptId}>
@@ -305,6 +317,8 @@ export function ChatView(props: ChatViewProps): JSX.Element {
           </div>
         ) : null}
       </header>
+
+      {props.paperTitle ? <div className="chat__paper-context" title={props.paperTitle}><span>읽고 있는 논문</span><p>{props.paperTitle}</p></div> : null}
 
       <div className="chat__body">
         <div ref={props.listRef} className="chat__scroll" tabIndex={0} aria-label="대화 내용" onScroll={props.onListScroll}>
@@ -332,13 +346,13 @@ export function ChatView(props: ChatViewProps): JSX.Element {
                     </li>
                   ))}
                 </ul>
-                <p className="chat-empty__tip">한국어 지면에서 문장을 선택하면 질문에 인용할 수 있습니다.</p>
+                <p className="chat-empty__tip">원본이나 번역문에서 문장을 선택하고 ‘질문’을 누르면 인용할 수 있습니다.</p>
               </div>
             ) : (
               <div className="chat__messages">
                 {messages.map((message, index) =>
                   message.role === 'user' ? (
-                    <QuestionBubble key={message.messageId} text={message.text} />
+                    <QuestionBubble key={message.messageId} text={message.text} onReuse={props.onSuggestion} />
                   ) : (
                     <MemoAnswer
                       key={message.messageId}
@@ -366,12 +380,13 @@ export function ChatView(props: ChatViewProps): JSX.Element {
         {!pinned ? (
           <button type="button" className="chat__jump" onClick={props.onJumpToBottom}>
             <IconArrowDown />
-            맨 아래로
+            {answering ? '작성 중인 답변 보기' : '최근 답변 보기'}
           </button>
         ) : null}
       </div>
 
       <footer className="chat__footer">
+        {props.failedDraft ? <div className="chat__recovered" role="status"><span>보내지 못한 질문을 보관하고 있습니다.</span><button type="button" onClick={props.onRestoreFailed}>입력란에 추가</button></div> : null}
         {reconnecting ? (
           <p className="chat__notice" role="status">
             로컬 서비스에 연결하지 못했습니다. 다시 연결을 시도하는 중입니다.
@@ -387,7 +402,7 @@ export function ChatView(props: ChatViewProps): JSX.Element {
         ) : null}
         {askError !== null ? (
           <div className="chat__error" role="alert">
-            <p>{chatErrorText(askError)}</p>
+            <p>{chatErrorText(askError, keepsModel)}</p>
             {needsAccount(askError) ? (
               <button type="button" onClick={props.onOpenAccount}>
                 계정 메뉴 열기
@@ -441,6 +456,7 @@ export function ChatView(props: ChatViewProps): JSX.Element {
             {answering ? (
               <button type="button" className="chat__send is-stop" aria-label="답변 멈추기" onClick={props.onStop} disabled={stopping}>
                 <IconStop />
+                <span>멈추기</span>
               </button>
             ) : (
               <button type="submit" className="chat__send" aria-label="질문 보내기" disabled={!canSend}>
@@ -480,9 +496,12 @@ export interface ChatPanelProps {
   paper: Paper | null;
   connection: Connection | null;
   canMutate: boolean;
-  /** The model chosen in the reader toolbar; the panel follows it until the reader picks one
-   * here, or the conversation was already answered with an offered model. */
+  /** The app-wide default (the reader toolbar's model); a new conversation follows it. A
+   * conversation keeps the model of its first question: a model picked here during one is saved
+   * as the default and waits for the next new conversation. */
   preferredModelId: string;
+  /** A model picked here also becomes the app-wide default. */
+  onModelChange(modelId: string): void;
   open: boolean;
   quote: ChatQuote | null;
   onClose(): void;
@@ -500,12 +519,15 @@ function reducedMotion(): boolean {
  * 300 ms only while an answer is being written and the panel is open, and sends questions.
  * Mounted per paper (keyed by paperKey), so nothing of one paper's conversation outlives it.
  */
-export function ChatPanel({ client, paperKey, paper, connection, canMutate, preferredModelId, open, quote, onClose, onOpenAccount, onConnectionStale }: ChatPanelProps): JSX.Element {
+export function ChatPanel({ client, paperKey, paper, connection, canMutate, preferredModelId, onModelChange, open, quote, onClose, onOpenAccount, onConnectionStale }: ChatPanelProps): JSX.Element {
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<AppError | null>(null);
   const [reloads, setReloads] = useState(0);
   const [draft, setDraft] = useState('');
+  const [failedDraft, setFailedDraft] = useState<string | null>(null);
+  const draftRef = useRef('');
+  draftRef.current = draft;
   const [chosenModel, setChosenModel] = useState('');
   const [sending, setSending] = useState<PendingQuestion | null>(null);
   const [stopping, setStopping] = useState(false);
@@ -535,7 +557,8 @@ export function ChatPanel({ client, paperKey, paper, connection, canMutate, pref
   const seen = useRef<{ messageId: string; status: ChatMessage['status'] } | null>(null);
 
   const modelIds = connection?.modelIds ?? [];
-  const modelId = effectiveModel(chosenModel, preferredModelId, modelIds, conversationModel(conversation));
+  const pinnedModel = conversation?.modelId ?? null;
+  const modelId = effectiveModel(chosenModel, preferredModelId, modelIds, pinnedModel);
   const blocked = chatBlockedReason({ canMutate, connection, paper });
   const answering = conversation?.answering === true;
 
@@ -777,8 +800,11 @@ export function ChatPanel({ client, paperKey, paper, connection, canMutate, pref
       } catch (cause) {
         const failure = extractError(cause);
         setAskError(failure);
-        // The question is not lost: it goes back into an empty composer.
-        if (!retry) setDraft((current) => (current.trim().length === 0 ? raw : current));
+        if (!retry) {
+          const recovered = recoverQuestionDraft(draftRef.current, raw);
+          setDraft(recovered.draft);
+          setFailedDraft(recovered.pending);
+        }
         if (needsAccount(failure)) onConnectionStaleRef.current?.();
         if (failure.code === 'BUSY') setReloads((count) => count + 1);
       } finally {
@@ -831,6 +857,8 @@ export function ChatPanel({ client, paperKey, paper, connection, canMutate, pref
     try {
       const { conversation: next } = await client.clearConversation(paperKey);
       setConversation(next);
+      // The new conversation starts on the app-wide default.
+      setChosenModel('');
       setAskError(null);
       stick.current = true;
     } catch (cause) {
@@ -858,6 +886,13 @@ export function ChatPanel({ client, paperKey, paper, connection, canMutate, pref
 
   return (
     <ChatView
+      paperTitle={paper ? displayedPaperTitle(paper) : undefined}
+      failedDraft={failedDraft}
+      onRestoreFailed={() => {
+        if (failedDraft !== null) setDraft((current) => withSuggestion(current, failedDraft));
+        setFailedDraft(null);
+        setReveal((count) => count + 1);
+      }}
       conversation={conversation}
       loading={loading}
       loadError={loadError}
@@ -872,7 +907,11 @@ export function ChatPanel({ client, paperKey, paper, connection, canMutate, pref
       confirmingClear={confirmingClear}
       pinned={pinned}
       announcement={announcement}
-      onModelChange={setChosenModel}
+      modelNotice={pinnedModelNotice(pinnedModel, chosenModel) ?? preferredModelFallback(connection)}
+      onModelChange={(id) => {
+        setChosenModel(id);
+        onModelChange(id);
+      }}
       onDraftChange={setDraft}
       onSend={send}
       onStop={() => void stop()}

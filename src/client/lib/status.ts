@@ -1,4 +1,5 @@
 import type { Block, Connection, Job, JobState, Paper, PauseReason, Translation, Usage } from '../../shared/contracts';
+import type { ApiClient } from './api';
 
 /** What the reader is told about one paragraph's translation. */
 export type BlockStatus = 'pending' | 'running' | 'completed' | 'failed' | 'unsupported';
@@ -194,12 +195,26 @@ export function formatObservedTime(iso: string | null | undefined): string | nul
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-/** Preselect the provider's default model, never a model it did not offer. */
+/** Preselect the default the service reports (the reader's saved default while it can be
+ * used, otherwise the official one), never a model it did not offer. */
 export function pickDefaultModel(connection: Connection): string | null {
   const models = connection.modelIds ?? [];
   if (models.length === 0) return null;
   const preferred = connection.defaultModelId;
   return preferred !== null && models.includes(preferred) ? preferred : models[0];
+}
+
+/** Shown next to the model choices while the saved default cannot be used. */
+export function preferredModelFallback(connection: Connection | null): string | null {
+  return connection?.preferredModelUnavailable === true && connection.defaultModelId !== null ? '기본 모델을 쓸 수 없어 공식 기본 모델을 씁니다.' : null;
+}
+
+/** A model chosen in the toolbar or the question panel becomes the app-wide default for new
+ * translations and new conversations; started jobs and conversations keep their own model.
+ * Answers the connection as it now stands, with the new default. */
+export async function saveModelChoice(client: Pick<ApiClient, 'saveDefaultModel' | 'connection'>, modelId: string | null): Promise<Connection> {
+  await client.saveDefaultModel(modelId);
+  return client.connection();
 }
 
 const PAPER_STATUS_LABELS: Record<Paper['status'], string> = {

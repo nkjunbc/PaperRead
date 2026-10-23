@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, type JSX, type RefObject } from 'react';
+import { useCallback, useEffect, useId, useRef, type JSX, type RefObject, type ReactNode } from 'react';
 import type { AppError, Connection, LoginAttempt } from '../../shared/contracts';
 import { subscriptionUsageLines } from '../lib/status';
 
@@ -17,6 +17,7 @@ export interface AccountPanelProps {
   onClose?: () => void;
   /** Element that should regain focus when the panel closes. */
   returnFocusRef?: RefObject<HTMLElement | null>;
+  children?: ReactNode;
 }
 
 const FOCUSABLE = [
@@ -110,6 +111,7 @@ export function AccountPanel({
   open = true,
   onClose,
   returnFocusRef,
+  children,
 }: AccountPanelProps): JSX.Element {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
@@ -224,6 +226,7 @@ export function AccountPanel({
         </p>
       ) : null}
 
+      {children}
       <div className="account-panel__actions">
         {showLoginButton ? (
           <button type="button" className="primary" onClick={onStartLogin} disabled={busy}>

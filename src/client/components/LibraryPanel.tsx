@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState, type JSX } from 'react';
 import type { Paper } from '../../shared/contracts';
+import { paperTitle } from '../lib/paper';
 
 export interface LibraryPanelProps {
   papers: readonly Paper[];
@@ -7,6 +8,7 @@ export interface LibraryPanelProps {
   deleteConfirmation: string | null;
   onOpen(paperKey: string): void;
   onRequestDelete(paperKey: string): void;
+  onRequestRename?(paperKey: string): void;
   onCancelDelete(): void;
   onConfirmDelete(paperKey: string): void;
 }
@@ -34,8 +36,12 @@ export function sortSavedPapers(papers: readonly Paper[]): Paper[] {
   });
 }
 
-function paperTitle(paper: Paper): string {
-  return paper.title?.trim() || paper.paperKey;
+export function filterSavedPapers(papers: readonly Paper[], query: string): Paper[] {
+  const words = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  return papers.filter((paper) => {
+    const text = [paper.displayTitle ?? '', paper.title ?? '', ...paper.authors, paper.paperKey, paper.sourceUrl].join(' ').toLocaleLowerCase();
+    return words.every((word) => text.includes(word));
+  });
 }
 
 /** The stored time as a date the reader can scan; the raw string when it is not a time. */
@@ -144,11 +150,13 @@ export function LibraryPanel({
   deleteConfirmation,
   onOpen,
   onRequestDelete,
+  onRequestRename,
   onCancelDelete,
   onConfirmDelete,
 }: LibraryPanelProps): JSX.Element {
   const [menuKey, setMenuKey] = useState<string | null>(null);
-  const sorted = sortSavedPapers(papers);
+  const [query, setQuery] = useState('');
+  const sorted = sortSavedPapers(filterSavedPapers(papers, query));
   const confirmationPaper = deleteConfirmation === null ? undefined : papers.find((paper) => paper.paperKey === deleteConfirmation);
 
   return (
@@ -156,13 +164,18 @@ export function LibraryPanel({
       <section className="library-panel" aria-labelledby="library-panel-title">
         <div className="library-panel__header">
           <div>
-            <p className="eyebrow">보관함</p>
-            <h2 id="library-panel-title">저장한 논문</h2>
+            <h1 id="library-panel-title">내 논문</h1>
           </div>
           <span className="library-count">{papers.length}편</span>
         </div>
+        {papers.length > 0 ? (
+          <div className="library-search">
+            <input type="search" aria-label="보관함 검색" placeholder="제목, 저자, 논문 번호로 찾기" value={query} onChange={(event) => setQuery(event.target.value)} />
+            {query !== '' ? <button type="button" onClick={() => setQuery('')}>검색 지우기</button> : null}
+          </div>
+        ) : null}
         {sorted.length === 0 ? (
-          <p className="library-empty">아직 저장한 논문이 없습니다.</p>
+          <p className="library-empty" role="status">{papers.length === 0 ? '아직 저장한 논문이 없습니다. 위에 논문 주소를 입력해 첫 논문을 열어보세요.' : '검색 결과가 없습니다. 다른 제목이나 저자로 찾아보세요.'}</p>
         ) : (
           <ul className="library-list">
             {sorted.map((paper) => {
@@ -178,6 +191,7 @@ export function LibraryPanel({
                     aria-current={isSelected ? 'true' : undefined}
                   >
                     <span className="library-card__title">{title}</span>
+                    {paper.authors.length > 0 ? <span className="library-card__authors">{paper.authors.join(', ')}</span> : null}
                     <span className="library-card__meta">
                       {paper.sourceKind === 'local' ? '첨부한 PDF' : paper.sourceKind === 'publication' ? new URL(paper.sourceUrl).hostname : `${paper.arxivId}v${paper.version}`} · {paperStatus(paper)}
                       {paper.pageCount !== null ? ` · ${paper.pageCount}쪽` : ''}
@@ -195,6 +209,8 @@ export function LibraryPanel({
                   </button>
                   {menuOpen ? (
                     <div className="library-card__menu" role="menu">
+                      {onRequestRename ? <button type="button" role="menuitem" disabled={paper.status === 'fetching' || paper.status === 'extracting'}
+                        onClick={() => { setMenuKey(null); onRequestRename(paper.paperKey); }}>제목 변경</button> : null}
                       <button
                         type="button"
                         role="menuitem"

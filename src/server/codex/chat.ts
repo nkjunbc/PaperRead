@@ -90,12 +90,18 @@ function turnFailure(value:unknown):Error&AppError {
   const e=object(value);const info=e?.codexErrorInfo;
   return mapRpcError(typeof info==='string'?{message:e?.message,data:{codexErrorInfo:info}}:value??{});
 }
+/** The transport stopped on an inbound line over its size limit (MAX_LINE_BYTES). */
+function isOversize(error:unknown):boolean {
+  const e=error as (Partial<AppError>&{oversize?:unknown})|null;
+  return e?.code==='UNSAFE_RUNTIME'&&e.oversize===true;
+}
 /** Shared mappers speak of translation; a question-path failure is worded for questions. */
 function forQuestion(error:unknown):unknown {
-  const e=error as (Partial<AppError>&{oversize?:unknown})|null;
-  if(e?.code==='TOO_LARGE')return failure('TOO_LARGE',TOO_LARGE_MESSAGE);
-  // The transport stopped on a line over its size limit: still UNSAFE_RUNTIME, worded for questions.
-  if(e?.code==='UNSAFE_RUNTIME'&&e.oversize===true)return failure('UNSAFE_RUNTIME',OVERSIZE_MESSAGE);
+  if((error as Partial<AppError>|null)?.code==='TOO_LARGE')return failure('TOO_LARGE',TOO_LARGE_MESSAGE);
+  // A line over the transport's size limit still ended the shared process fail-closed (and stays
+  // UNSAFE_RUNTIME on the translation path), but for a question it is a size problem, not
+  // isolation evidence: it is reported as one, and a new conversation is the way on.
+  if(isOversize(error))return failure('RESPONSE_TOO_LARGE',OVERSIZE_MESSAGE);
   return error;
 }
 function agentMessages(items:unknown):{text:string;phase:unknown}[] {
@@ -199,7 +205,10 @@ export class CodexPaperChat implements PaperChat {
     catch(error){
       entry.active=false;
       const code=(error as Partial<AppError>).code;
-      if(code==='UNSAFE_RUNTIME'){await this.drop(id,entry,false);throw error;}
+      // Isolation evidence is already this question's failure. A stop on an oversized line is
+      // reported as a size problem (forQuestion), so files left in the scratch folder are still
+      // reported over it, as the evidence they are.
+      if(code==='UNSAFE_RUNTIME'){await this.drop(id,entry,isOversize(error));throw error;}
       // Nothing entered the thread when no turn was sent, or when the official program refused
       // to take one for a reason that says nothing about the thread (busy, usage limit,
       // sign-in): keep it, prompt cache and all. Not when this turn carried the replay the new
@@ -316,7 +325,8 @@ export class CodexPaperChat implements PaperChat {
     if(rpc.onGenerationEvent)rpc.onGenerationEvent(handler);else rpc.onEvent?.(handler);
     this.listen(threadId);
     // A fail-closed stop (server request, bad or oversized line) keeps its UNSAFE_RUNTIME code:
-    // it is evidence, not a connection loss to retry.
+    // it is not a connection loss to retry. Only an oversized line is reported as a size
+    // problem, once the question has ended (forQuestion).
     const onClose=(reason?:Error)=>done({error:closedFailure(reason,'공식 프로그램 연결이 끊겼습니다.')});
     rpc.onClose?.(onClose);
     let onAbort:(()=>void)|null=null;

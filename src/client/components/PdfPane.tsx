@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from 'react';
 import { TextLayer } from 'pdfjs-dist/legacy/build/pdf.mjs';
-import type { Block, Highlight, Region } from '../../shared/contracts';
+import type { AnnotationInput, AnnotationMode, Block, Highlight, Region } from '../../shared/contracts';
 import type { Size } from '../lib/geometry';
 import { hitTestBlock, pageRenderSize, visiblePageWindow } from '../lib/geometry';
 import { selectionToRegions, sweepSelection, type Point, type SpanBox } from '../lib/highlights';
+import { annotationSurface, measuredPdfSpans } from '../lib/annotations';
 import { intrinsicSize, type PDFDocumentProxy } from '../lib/pdf';
 import { HighlightLayer } from './HighlightLayer';
+import { SelectionToolbar } from './AnnotationTools';
+import { InkSurface } from './InkSurface';
+import { EraserSurface } from './EraserSurface';
+import type { EraserSize } from '../lib/eraser';
 
 export interface PageCanvasProps {
   doc: PDFDocumentProxy;
@@ -25,6 +30,10 @@ export interface PageCanvasProps {
   /** Forwarded onto the page container; used for drag-driven highlight creation. */
   onMouseDown?(event: React.MouseEvent<HTMLDivElement>): void;
   onMouseUp?(event: React.MouseEvent<HTMLDivElement>): void;
+  onPointerDown?(event: React.PointerEvent<HTMLDivElement>): void;
+  onPointerMove?(event: React.PointerEvent<HTMLDivElement>): void;
+  onPointerUp?(event: React.PointerEvent<HTMLDivElement>): void;
+  onDoubleClick?(event: React.MouseEvent<HTMLDivElement>): void;
 }
 
 /**
@@ -37,7 +46,7 @@ export interface PageCanvasProps {
  * Only pages inside the visible window are mounted, so a 40-page paper never
  * rasterises 40 canvases at once.
  */
-export function PageCanvas({ doc, page, zoom, dpr, ariaLabel, size, onSize, registerPage, children, onMouseDown, onMouseUp }: PageCanvasProps): JSX.Element {
+export function PageCanvas({ doc, page, zoom, dpr, ariaLabel, size, onSize, registerPage, children, onMouseDown, onMouseUp, onPointerDown, onPointerMove, onPointerUp, onDoubleClick }: PageCanvasProps): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [renderedSize, setRenderedSize] = useState<Size | null>(null);
   const box = size ?? renderedSize;
@@ -87,6 +96,10 @@ export function PageCanvas({ doc, page, zoom, dpr, ariaLabel, size, onSize, regi
       style={box === null ? undefined : { width: box.width, height: box.height }}
       onMouseDown={onMouseDown}
       onMouseUp={onMouseUp}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onDoubleClick={onDoubleClick}
     >
       <canvas ref={canvasRef} aria-label={ariaLabel ?? `${page}쪽 원문`} />
       {children}
@@ -155,8 +168,14 @@ interface PageViewProps {
   onSize(page: number, size: Size): void;
   registerPage(page: number, element: HTMLDivElement | null): void;
   onSelectBlock(block: Block): void;
-  onCreateHighlight(page: number, rects: Region[], text: string): void;
+  onCreateHighlight?(page: number, rects: Region[], text: string): void;
   onOpenHighlight(highlight: Highlight): void;
+  annotationMode?: AnnotationMode;
+  annotationColor?: Highlight['color'];
+  annotationEraserSize?: EraserSize;
+  onCreateAnnotation?(input: AnnotationInput, openNote?: boolean): void;
+  onAsk?(text: string): void;
+  onEraseAnnotation?(highlightId:string):void;
 }
 
 /**
@@ -168,72 +187,132 @@ interface PageViewProps {
  * click — one that did not drag — is hit-tested against the page's readable
  * blocks directly, and a drag becomes a highlight of the lines it swept.
  */
-function PageView({ doc, page, zoom, dpr, size, blocks, highlights, onSize, registerPage, onSelectBlock, onCreateHighlight, onOpenHighlight }: PageViewProps): JSX.Element {
-  const pageHighlights = useMemo(() => highlights.filter((h) => h.page === page), [highlights, page]);
-  // Where the drag began, in viewport pixels; null while no button is down on this page.
+function PageView({ doc, page, zoom, dpr, size, blocks, highlights, onSize, registerPage, onSelectBlock, onCreateHighlight, onOpenHighlight, annotationMode = 'select', annotationColor = 'yellow', annotationEraserSize, onCreateAnnotation, onAsk, onEraseAnnotation }: PageViewProps): JSX.Element {
+  const pageHighlights = useMemo(() => highlights.filter((h) => h.page === page && annotationSurface(h) === 'original'), [highlights, page]);
+  // Page-local pixels: scrolling the pane during a drag must not move its first glyph.
   const dragStart = useRef<Point | null>(null);
+  const measured = useRef<SpanBox[] | null>(null);
+  const navigateTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [preview, setPreview] = useState<Region[]>([]);
+  const [selection, setSelection] = useState<{ input:AnnotationInput; position:{ left:number; top:number } } | null>(null);
+  const closeSelection = useCallback(() => { setSelection(null); setPreview([]); }, []);
+  const create = useCallback((input:AnnotationInput, openNote?:boolean) => {
+    if (onCreateAnnotation) onCreateAnnotation(input, openNote);
+    else onCreateHighlight?.(input.page, input.rects, input.text);
+  }, [onCreateAnnotation, onCreateHighlight]);
 
   // A drag released outside this page (over another page, the gutter, the other pane)
   // never reaches this page's mouseup; the start point must not survive to pair with an
   // unrelated later release here.
   useEffect(() => {
     const clear = () => {
+      if (dragStart.current !== null) setPreview([]);
       dragStart.current = null;
+      measured.current = null;
     };
-    window.addEventListener('mouseup', clear);
-    return () => window.removeEventListener('mouseup', clear);
+    window.addEventListener('pointerup', clear);
+    window.addEventListener('pointercancel', clear);
+    return () => { window.removeEventListener('pointerup', clear); window.removeEventListener('pointercancel', clear); if (navigateTimer.current) clearTimeout(navigateTimer.current); };
   }, []);
+  useEffect(() => { closeSelection(); dragStart.current = null; measured.current = null; }, [zoom, annotationMode, closeSelection]);
 
-  const handleMouseDown = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-    dragStart.current = { x: event.clientX, y: event.clientY };
-  }, []);
+  const handlePointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || annotationMode !== 'select' || (event.target as Element).closest('.annotation-selection-toolbar,.saved-ink')) return;
+    if (navigateTimer.current) clearTimeout(navigateTimer.current);
+    setSelection(null); setPreview([]); measured.current = null;
+    const box=event.currentTarget.getBoundingClientRect();
+    dragStart.current = { x: event.clientX-box.left, y: event.clientY-box.top };
+  }, [annotationMode]);
 
-  const handleMouseUp = useCallback(
-    (event: React.MouseEvent<HTMLDivElement>) => {
+  const handlePointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const start = dragStart.current;
+    const container = event.currentTarget;
+    const box=container.getBoundingClientRect();
+    const end={x:event.clientX-box.left,y:event.clientY-box.top};
+    if (!start || Math.hypot(end.x - start.x, end.y - start.y) <= 3) return;
+    if (event.pointerType === 'touch') { dragStart.current = null; return; }
+    measured.current ??= measuredPdfSpans(container, true);
+    const swept = sweepSelection(measured.current, start, end);
+    window.getSelection()?.removeAllRanges();
+    setPreview(swept ? selectionToRegions(swept.rects, {left:0,top:0,width:box.width,height:box.height}, page) ?? [] : []);
+  }, [page]);
+
+  const handlePointerUp = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
       const container = event.currentTarget;
       const pageBox = container.getBoundingClientRect();
       const start = dragStart.current;
       dragStart.current = null;
       if (start === null) return; // the button went down on another page: not this page's gesture
-      const end: Point = { x: event.clientX, y: event.clientY };
+      const end: Point = { x: event.clientX-pageBox.left, y: event.clientY-pageBox.top };
       const dragged = Math.hypot(end.x - start.x, end.y - start.y) > 3;
       // A plain click on a saved highlight opens its note (the box's own click handler);
       // it must not also hit-test the page beneath and jump the other pane. A drag that
       // happens to end over a box is still a drag.
-      if (!dragged && (event.target as HTMLElement).closest('.highlight-box') !== null) return;
+      if (!dragged && (event.target as Element).closest('.highlight-box,.saved-ink,.annotation-selection-toolbar') !== null) return;
 
       if (dragged) {
         // The highlight follows the swept lines, not the browser's DOM-order selection;
         // the native selection is only cleared so it does not linger under the new box.
-        const spans: SpanBox[] = Array.from(container.querySelectorAll<HTMLElement>('.textLayer span')).map((span) => {
-          const rect = span.getBoundingClientRect();
-          return { rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height }, text: span.textContent ?? '' };
-        });
+        const spans = measured.current ?? measuredPdfSpans(container, true);
         const swept = sweepSelection(spans, start, end);
         window.getSelection()?.removeAllRanges();
         if (swept === null) return;
         // pdf.js emits C0 codes for glyphs it cannot map to Unicode (math symbols); the
         // stored excerpt is one line of prose, never raw control characters.
         const text = swept.text.replace(/\p{Cc}+/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 2000);
-        const regions = selectionToRegions(swept.rects, { left: pageBox.left, top: pageBox.top, width: pageBox.width, height: pageBox.height }, page);
-        if (regions !== null && text.length > 0) onCreateHighlight(page, regions, text);
+        const regions = selectionToRegions(swept.rects, { left: 0, top: 0, width: pageBox.width, height: pageBox.height }, page);
+        if (regions !== null && text.length > 0) {
+          setPreview(regions);
+          setSelection({ input:{ page, rects:regions, text, surface:'original', kind:'highlight' }, position:{ left:event.clientX, top:event.clientY } });
+        }
         return;
+      }
+
+      // Double/triple-click and keyboard selections are selections, never page jumps.
+      const native=window.getSelection();
+      if(native&&!native.isCollapsed&&native.rangeCount>0) {
+        const range=native.getRangeAt(0);
+        if(container.contains(range.startContainer)&&container.contains(range.endContainer)) {
+          const span=range.startContainer.parentElement?.closest('.textLayer span');
+          if(span?.contains(range.endContainer)) {
+            const rects=selectionToRegions(Array.from(range.getClientRects()),pageBox,page);
+            const text=native.toString().replace(/\p{Cc}/gu,' ').trim().slice(0,2000);
+            if(rects&&text){setPreview(rects);setSelection({input:{page,rects,text,surface:'original'},position:{left:event.clientX,top:event.clientY}});}
+          }
+          return;
+        }
       }
 
       // A plain click: hit-test for navigation.
       const xRatio = (event.clientX - pageBox.left) / pageBox.width;
       const yRatio = (event.clientY - pageBox.top) / pageBox.height;
       const block = hitTestBlock(blocks, page, xRatio, yRatio);
-      if (block !== null) onSelectBlock(block);
+      if (block !== null) navigateTimer.current = setTimeout(() => { navigateTimer.current = null; onSelectBlock(block); }, 300);
     },
-    [blocks, page, onCreateHighlight, onSelectBlock],
+    [blocks, page, onSelectBlock],
   );
 
+  const handleDoubleClick = useCallback((event:React.MouseEvent<HTMLDivElement>) => {
+    if (navigateTimer.current) clearTimeout(navigateTimer.current);
+    const selected = window.getSelection();
+    if (!selected?.rangeCount || selected.isCollapsed) return;
+    const range = selected.getRangeAt(0);
+    const span = range.startContainer.parentElement?.closest('.textLayer span');
+    if (!span || !span.contains(range.endContainer)) return;
+    const rects = selectionToRegions(Array.from(range.getClientRects()), event.currentTarget.getBoundingClientRect(), page);
+    const text = selected.toString().replace(/\p{Cc}/gu, ' ').trim().slice(0, 2000);
+    if (rects && text) { setPreview(rects); setSelection({ input:{ page, rects, text, surface:'original' }, position:{ left:event.clientX, top:event.clientY } }); }
+  }, [page]);
+
   return (
-    <PageCanvas doc={doc} page={page} zoom={zoom} dpr={dpr} size={size} onSize={onSize} registerPage={registerPage} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+    <PageCanvas doc={doc} page={page} zoom={zoom} dpr={dpr} size={size} onSize={onSize} registerPage={registerPage} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onDoubleClick={handleDoubleClick}>
       <TextLayerOverlay doc={doc} page={page} zoom={zoom} />
       <HighlightLayer highlights={pageHighlights} onOpen={onOpenHighlight} />
+      {preview.length > 0 ? <div className="annotation-selection-preview" aria-hidden="true">{preview.map((r, i) => <i key={i} style={{ left:`${r.x * 100}%`, top:`${r.y * 100}%`, width:`${r.width * 100}%`, height:`${r.height * 100}%` }} />)}</div> : null}
+      {selection ? <SelectionToolbar selection={selection.input} position={selection.position} color={annotationColor} onCreate={create} onAsk={onAsk} onClose={closeSelection} /> : null}
+      {annotationMode === 'pen' ? <InkSurface page={page} surface="original" color={annotationColor} onCreate={create} /> : null}
+      {annotationMode === 'erase' && onEraseAnnotation ? <EraserSurface page={page} highlights={pageHighlights} onErase={onEraseAnnotation} size={annotationEraserSize} /> : null}
     </PageCanvas>
   );
 }
@@ -253,8 +332,14 @@ export interface PdfPaneProps {
   bodyRef: React.RefObject<HTMLDivElement | null>;
   onScroll(): void;
   onSelectBlock(block: Block): void;
-  onCreateHighlight(page: number, rects: Region[], text: string): void;
+  onCreateHighlight?(page: number, rects: Region[], text: string): void;
   onOpenHighlight(highlight: Highlight): void;
+  annotationMode?: AnnotationMode;
+  annotationColor?: Highlight['color'];
+  annotationEraserSize?: EraserSize;
+  onCreateAnnotation?(input: AnnotationInput, openNote?: boolean): void;
+  onAsk?(text: string): void;
+  onEraseAnnotation?(highlightId:string):void;
 }
 
 /**
@@ -294,6 +379,12 @@ export function PdfPages(props: PdfPaneProps): JSX.Element {
             onSelectBlock={onSelectBlock}
             onCreateHighlight={onCreateHighlight}
             onOpenHighlight={onOpenHighlight}
+            annotationMode={props.annotationMode}
+            annotationColor={props.annotationColor}
+            annotationEraserSize={props.annotationEraserSize}
+            onCreateAnnotation={props.onCreateAnnotation}
+            onAsk={props.onAsk}
+            onEraseAnnotation={props.onEraseAnnotation}
           />
         ) : (
           <div

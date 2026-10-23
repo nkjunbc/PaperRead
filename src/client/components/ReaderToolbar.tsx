@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useId, useRef, useState, type JSX, type ReactNode, type RefObject } from 'react';
-import type { Job, Paper } from '../../shared/contracts';
+import type { Block, Job, Paper, Translation } from '../../shared/contracts';
+import { paperTitle } from '../lib/paper';
 import { pauseReasonNote } from '../lib/status';
 import { IconChat } from './ChatIcons';
+import { TranslationActivity } from './TranslationActivity';
 
 export interface ReplacementRequest {
   modelId: string;
@@ -25,10 +27,13 @@ export interface ReaderToolbarProps {
   canTranslate: boolean;
   disabledReason: string | null;
   replacement: ReplacementRequest | null;
+  /** Said under the model choice, e.g. that the saved default cannot be used. */
+  modelNotice?: string | null;
   onModelChange(modelId: string): void;
   onStart(modelId: string): void;
   onPause(jobId: string): void;
   onResume(jobId: string): void;
+  onRetry?(jobId: string): void;
   onRequestReplacement(): void;
   onConfirmReplacement(modelId: string): void;
   onCancelReplacement(): void;
@@ -37,6 +42,9 @@ export interface ReaderToolbarProps {
   /** Opens the delete confirmation. Delete never sits among the primary buttons. */
   onRequestDelete?: () => void;
   chat?: ChatToggle;
+  blocks?: readonly Block[];
+  translations?: readonly Translation[];
+  onReadPage?(page: number): void;
 }
 
 const FOCUSABLE = [
@@ -62,8 +70,9 @@ function jobLabel(job: Job | null): string {
     case 'failed':
       return '번역 실패';
     case 'completed':
-    case 'completed_with_gaps':
       return '번역 저장됨';
+    case 'completed_with_gaps':
+      return '일부 번역 확인 필요';
   }
 }
 
@@ -89,7 +98,7 @@ function primaryAction(job: Job | null): 'start' | 'pause' | 'resume' | 'saved' 
 }
 
 function replacementTitle(paper: Paper | null): string {
-  return paper?.title?.trim() || paper?.paperKey || '이 논문';
+  return paper === null ? '이 논문' : paperTitle(paper);
 }
 
 interface ReplacementDialogProps {
@@ -182,23 +191,28 @@ export function ReaderToolbar({
   canTranslate,
   disabledReason,
   replacement,
+  modelNotice = null,
   onModelChange,
   onStart,
   onPause,
   onResume,
+  onRetry,
   onRequestReplacement,
   onConfirmReplacement,
   onCancelReplacement,
   hint = null,
   onRequestDelete,
   chat,
+  blocks = [],
+  translations = [],
+  onReadPage,
 }: ReaderToolbarProps): JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false);
   const action = primaryAction(job);
   const hasPaper = paper !== null;
   const primaryDisabled = !hasPaper || (action !== 'pause' && !canTranslate) || (action === 'start' && selectedModelId.trim().length === 0);
   const statusText = jobLabel(job);
-  const title = paper?.title?.trim() || paper?.paperKey || '논문을 선택해 주세요';
+  const title = paper === null ? '논문을 선택해 주세요' : paperTitle(paper);
   // Both counts are pages that hold something to translate; a references-only page is not one.
   const progress = job === null ? null : `번역할 ${job.totalTranslatableBlocks}쪽 중 ${job.completedBlocks}쪽 완료`;
   const page = job?.currentPage === null || job?.currentPage === undefined ? null : `${job.currentPage}쪽`;
@@ -239,23 +253,27 @@ export function ReaderToolbar({
           </div>
         </div>
         <div className="reader-toolbar__controls">
-          <label className="model-picker">
+          {modelIds.length > 0 || action !== 'saved' ? <label className="model-picker">
             <span>번역 모델</span>
             <select value={selectedModelId} onChange={(event) => onModelChange(event.target.value)} disabled={modelIds.length === 0}>
               {modelIds.length === 0 ? <option value="">사용 가능한 모델 없음</option> : null}
               {modelIds.map((modelId) => <option key={modelId} value={modelId}>{modelId}</option>)}
             </select>
-          </label>
+          </label> : null}
+          {modelNotice !== null ? <p className="model-notice" role="status">{modelNotice}</p> : null}
           <div className="reader-toolbar__actions">
-            <button
+            {action !== 'saved' ? <button
               type="button"
               className={action === 'start' ? 'primary' : undefined}
               onClick={handlePrimary}
-              disabled={primaryDisabled || action === 'saved'}
+              disabled={primaryDisabled}
               aria-describedby={!canTranslate && disabledReason !== null ? 'translation-disabled-reason' : undefined}
             >
               {primaryLabel(job)}
-            </button>
+            </button> : null}
+            {job?.state === 'completed_with_gaps' && onRetry ? <button type="button" className="primary" disabled={!canTranslate}
+              title="완료된 번역은 유지하고 누락된 문단만 같은 모델로 다시 번역합니다. ChatGPT 구독 사용량을 사용합니다."
+              onClick={() => onRetry(job.jobId)}>누락된 번역 다시 시도</button> : null}
             <button type="button" onClick={onRequestReplacement} disabled={!hasPaper || job === null || selectedModelId.trim().length === 0}>
               새로 번역
             </button>
@@ -301,10 +319,11 @@ export function ReaderToolbar({
           ) : null}
         </div>
         </div>
-        {hint !== null || (!canTranslate && disabledReason !== null) ? (
+        {job !== null && ['running', 'paused', 'failed', 'completed_with_gaps'].includes(job.state) && onReadPage ? <TranslationActivity job={job} blocks={blocks} translations={translations} onReadPage={onReadPage} /> : null}
+        {(action !== 'saved' || job?.state === 'completed_with_gaps') && action !== 'pause' && (hint !== null || (!canTranslate && disabledReason !== null)) ? (
           <div className="reader-toolbar__meta">
             {!canTranslate && disabledReason !== null ? <p id="translation-disabled-reason" className="toolbar-disabled-reason" role="status">{disabledReason}</p> : null}
-            {hint !== null && (canTranslate || disabledReason === null) ? <p className="toolbar-hint">{hint}</p> : null}
+            {hint !== null && (canTranslate || disabledReason === null) ? <p className="toolbar-hint">{job?.state === 'completed_with_gaps' ? '다시 시도하면 누락된 문단만 같은 모델로 전송하며 ChatGPT 구독 사용량을 사용합니다.' : hint}</p> : null}
           </div>
         ) : null}
       </section>

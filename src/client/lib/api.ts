@@ -1,7 +1,9 @@
 import type {
   AppError,
+  AnnotationInput,
   AskRequest,
   Connection,
+  ModelPreferences,
   ConversationResult,
   Highlight,
   Job,
@@ -9,6 +11,7 @@ import type {
   LoginStartResult,
   LogoutResult,
   PaperListResult,
+  Paper,
   Region,
   RestartTranslationRequest,
   Snapshot,
@@ -64,6 +67,9 @@ export function extractError(value: unknown): AppError {
  * rendered. Reads carry no credential at all.
  */
 export class ApiClient {
+  preferences(): Promise<ModelPreferences> { return this.request('/api/preferences'); }
+  saveDefaultModel(defaultModelId: string | null): Promise<ModelPreferences> { return this.request('/api/preferences', { method: 'POST', body: { defaultModelId } }); }
+  refreshModels(): Promise<Connection> { return this.request('/api/connection/refresh', { method: 'POST' }); }
   private readonly token: string | null;
   private readonly fetchImpl: typeof fetch;
 
@@ -167,6 +173,10 @@ export class ApiClient {
     return this.request(apiPath('/api/papers/:key', { key: paperKey }), { method: 'DELETE' });
   }
 
+  renamePaper(paperKey: string, displayTitle: string | null): Promise<Paper> {
+    return this.request(apiPath('/api/papers/:key', { key: paperKey }), { method: 'PATCH', body: { displayTitle } });
+  }
+
   startTranslation(paperKey: string, modelId: string): Promise<{ job: Job }> {
     return this.request(apiPath('/api/papers/:key/translation', { key: paperKey }), { method: 'POST', body: { modelId } });
   }
@@ -177,6 +187,10 @@ export class ApiClient {
 
   resumeJob(jobId: string): Promise<{ job: Job }> {
     return this.request(apiPath('/api/jobs/:id/resume', { id: jobId }), { method: 'POST' });
+  }
+
+  retryJob(jobId: string): Promise<{ job: Job }> {
+    return this.request(apiPath('/api/jobs/:id/retry', { id: jobId }), { method: 'POST' });
   }
 
   /**
@@ -212,7 +226,7 @@ export class ApiClient {
     return this.request<Highlight[]>(apiPath('/api/papers/:key/highlights', { key: paperKey }));
   }
 
-  createHighlight(paperKey: string, input: { page: number; rects: Region[]; text: string; color?: Highlight['color'] }): Promise<Highlight> {
+  createHighlight(paperKey: string, input: AnnotationInput): Promise<Highlight> {
     return this.request<Highlight>(apiPath('/api/papers/:key/highlights', { key: paperKey }), { method: 'POST', body: input });
   }
 

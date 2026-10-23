@@ -14,11 +14,13 @@ import type { AccountSession } from './auth-contract';
 const DEFAULT_TIMEOUT_MS=10*60*1000;
 const AUTH_EVENT='account/login/completed';
 const ALLOWED_LOGIN_HOSTS=new Set(['auth.openai.com','chatgpt.com']);
-const ERROR_CODES:ReadonlySet<string>=new Set(['INVALID_INPUT','NOT_FOUND','NETWORK','TOO_LARGE','UNSUPPORTED_PDF','SOURCE_CHANGED','AUTH_REQUIRED','SUBSCRIPTION_REQUIRED','QUOTA','MODEL_UNAVAILABLE','BUSY','INVALID_TRANSLATION','STORAGE','UNSAFE_RUNTIME','INTERNAL']);
+const ERROR_CODES:ReadonlySet<string>=new Set(['INVALID_INPUT','NOT_FOUND','NETWORK','TOO_LARGE','RESPONSE_TOO_LARGE','UNSUPPORTED_PDF','SOURCE_CHANGED','AUTH_REQUIRED','SUBSCRIPTION_REQUIRED','QUOTA','MODEL_UNAVAILABLE','BUSY','INVALID_TRANSLATION','STORAGE','UNSAFE_RUNTIME','INTERNAL']);
 
 export interface AccountAuthenticatorOptions {
   now?:()=>number;
   timeoutMs?:number;
+  /** Re-query the model catalogue after a confirmed login, before publishing completion. */
+  onLoginCompleted?:()=>Promise<unknown>;
 }
 type RpcFactory=()=>Promise<GenerationRpc>;
 type AccountKind='signed_out'|'subscription'|'api_key'|'unavailable';
@@ -61,9 +63,11 @@ export class AccountAuthenticator implements AccountSession {
   private serial:Promise<unknown>=Promise.resolve();
   private generation=0;
   private stopped=false;
+  private readonly onLoginCompleted?:()=>Promise<unknown>;
 
   constructor(private readonly factory:RpcFactory=startOfficialRpc,options:AccountAuthenticatorOptions={}) {
     this.now=options.now??(()=>Date.now());
+    this.onLoginCompleted=options.onLoginCompleted;
     this.timeoutMs=typeof options.timeoutMs==='number'&&Number.isFinite(options.timeoutMs)&&options.timeoutMs>=0
       ? options.timeoutMs : DEFAULT_TIMEOUT_MS;
   }
@@ -253,6 +257,9 @@ export class AccountAuthenticator implements AccountSession {
       try{account=await this.readAccount(rpc);}catch{return;}
       if(account!=='subscription')return;
       this.clearTimer(record);
+      // Catalogue failure must not undo an already confirmed official login. A subsequent
+      // connection read/refresh reports catalogue availability separately.
+      try{await this.onLoginCompleted?.();}catch{/* connection reads report catalogue availability */}
       record.attempt={...record.attempt,status:'completed',error:null};
     });
   }

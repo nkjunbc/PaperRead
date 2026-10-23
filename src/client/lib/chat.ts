@@ -155,8 +155,9 @@ export function chatBlockedReason(input: { canMutate: boolean; connection: Conne
   }
 }
 
-/** A failure to answer, in the reader's words. */
-export function chatErrorText(error: AppError): string {
+/** A failure to answer, in the reader's words. `pinned`: the conversation keeps its model, so
+ * another model means a new conversation. */
+export function chatErrorText(error: AppError, pinned = false): string {
   switch (error.code) {
     case 'AUTH_REQUIRED':
       return 'Codex 로그인이 풀렸습니다. 계정 메뉴에서 다시 로그인해 주세요.';
@@ -165,13 +166,17 @@ export function chatErrorText(error: AppError): string {
     case 'QUOTA':
       return '구독 사용 한도에 걸렸습니다. 한도가 다시 열릴 때까지 기다린 뒤 물어봐 주세요.';
     case 'MODEL_UNAVAILABLE':
-      return '선택한 모델을 지금 쓸 수 없습니다. 다른 모델을 골라 다시 시도해 주세요.';
+      return pinned ? '이 대화의 모델을 지금 쓸 수 없습니다. 새 대화를 시작해 다른 모델로 물어봐 주세요.' : '선택한 모델을 지금 쓸 수 없습니다. 다른 모델을 골라 다시 시도해 주세요.';
     case 'UNSAFE_RUNTIME':
       // Mostly reported after the turn started (a tool item mid-answer, files left behind): the
       // question and the paper may already have gone out, so this never claims they stayed here.
       return '안전하지 않은 실행이 감지되어 답변을 중단했습니다. 질문과 논문 본문은 이미 전송되었을 수 있습니다.';
     case 'TOO_LARGE':
-      return '논문과 대화가 이 모델이 한 번에 읽을 수 있는 분량을 넘었습니다. 새 대화로 시작하거나 다른 모델로 물어봐 주세요.';
+      return '논문과 대화가 이 모델이 한 번에 읽을 수 있는 분량을 넘었습니다. 새 대화를 시작해 주세요. 새 대화에서는 다른 모델을 고를 수 있습니다.';
+    case 'RESPONSE_TOO_LARGE':
+      // One line from the official program outgrew what the app reads at once, so the connection
+      // was ended: a size problem, worded apart from unsafe-runtime evidence.
+      return '공식 프로그램의 응답이 한 번에 받을 수 있는 크기를 넘어 연결을 끊었습니다. 새 대화를 시작해 주세요.';
     case 'BUSY':
       return '이전 답변이 아직 끝나지 않았습니다.';
     default:
@@ -185,25 +190,22 @@ export function needsAccount(error: AppError | null): boolean {
 }
 
 /**
- * The model a question goes to: the reader's pick in this panel, else the model the
- * conversation was last answered with (coming back to a paper continues on the same model and
- * so on the same official thread), else the toolbar's, else the first offered.
+ * The model a question goes to. A conversation keeps the model of its first question, as the
+ * service reports it (`pinned`), even one no longer offered: the service then refuses it and the
+ * reader starts a new conversation; it is never swapped here. A new conversation goes to the
+ * reader's pick in this panel, else the toolbar's (the app-wide default), else the first offered.
  */
-export function effectiveModel(chosen: string, fallback: string, modelIds: readonly string[], continued: string | null = null): string {
+export function effectiveModel(chosen: string, fallback: string, modelIds: readonly string[], pinned: string | null): string {
+  if (pinned !== null) return pinned;
   if (chosen !== '' && modelIds.includes(chosen)) return chosen;
-  if (continued !== null && modelIds.includes(continued)) return continued;
   if (fallback !== '' && modelIds.includes(fallback)) return fallback;
   return modelIds[0] ?? '';
 }
 
-/** The model of the conversation's latest completed answer, or null when it has none. */
-export function conversationModel(conversation: Conversation | null): string | null {
-  if (conversation === null) return null;
-  for (let index = conversation.messages.length - 1; index >= 0; index -= 1) {
-    const message = conversation.messages[index];
-    if (message.role === 'assistant' && message.status === 'completed' && message.modelId !== null) return message.modelId;
-  }
-  return null;
+/** Said under the model choice once the reader picked another model during a conversation that
+ * keeps its own: the pick, saved as the app-wide default, waits for the next new conversation. */
+export function pinnedModelNotice(pinned: string | null, chosen: string): string | null {
+  return pinned !== null && chosen !== '' && chosen !== pinned ? '선택한 모델은 다음 새 대화부터 적용됩니다.' : null;
 }
 
 export function lastAssistant(conversation: Conversation | null): ChatMessage | null {
@@ -215,11 +217,11 @@ export function lastAssistant(conversation: Conversation | null): ChatMessage | 
   return null;
 }
 
-/** Failures whose way forward is something the reader does right here first — sign in, pick
- * another model — after which asking the same question again makes sense. A spent usage limit
- * is not one: nothing on this page reopens it, and a retry button beside it would only send the
- * paper out again to be refused. */
-const RETRY_AFTER_ACTION: ReadonlySet<AppError['code']> = new Set(['AUTH_REQUIRED', 'SUBSCRIPTION_REQUIRED', 'MODEL_UNAVAILABLE']);
+/** Failures whose way forward is something the reader does right here first — sign in — after
+ * which asking the same question again makes sense. A spent usage limit is not one: nothing on
+ * this page reopens it, and a retry button beside it would only send the paper out again to be
+ * refused. Nor is an unavailable model: the conversation keeps it, so asking again goes to it. */
+const RETRY_AFTER_ACTION: ReadonlySet<AppError['code']> = new Set(['AUTH_REQUIRED', 'SUBSCRIPTION_REQUIRED']);
 
 /**
  * Whether an answer may be asked again with one click. A stopped answer may. A failed one may
@@ -295,4 +297,8 @@ export function nextPoll(state: PollState, ok: boolean): PollState {
 /** Enough reads were missed in a row to tell the reader the service is not answering. */
 export function pollInTrouble(state: PollState): boolean {
   return state.misses >= CHAT_POLL_TROUBLE_AFTER;
+}
+/** A failed send must keep both the original question and anything typed meanwhile. */
+export function recoverQuestionDraft(current: string, failed: string): { draft: string; pending: string | null } {
+  return current.trim() === '' || current === failed ? { draft: failed, pending: null } : { draft: current, pending: failed };
 }

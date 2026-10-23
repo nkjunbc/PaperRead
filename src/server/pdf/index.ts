@@ -3,8 +3,13 @@ import { getDocument, OPS } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import type { Block, Coverage, Region } from '../../shared/contracts';
 import { MAX_PDF_BYTES, MAX_PDF_PAGES } from '../../shared/pdf';
 import { SourceError } from '../arxiv/index';
+import { mathematicalFont, offsetSourceSpans, sourceSpansForPieces, type SourcePiece } from './inline';
+import { hyphenVocabulary, joinLineBreakHyphens, restoreSoftHyphen, softHyphenEnds } from './hyphen';
 
-export const EXTRACTION_VERSION = 'pdfjs6-lines-v4';
+export const EXTRACTION_VERSION = 'pdfjs6-lines-v9-hyphen-appendix';
+// Keep the identity recipe: unaffected text/order stays stable. Recovered captions
+// change later block order naturally; re-extraction remaps saved text by source hash.
+const BLOCK_ID_VERSION = 'pdfjs6-lines-v4';
 export const sha256 = (data: string | Uint8Array) => createHash('sha256').update(data).digest('hex');
 export interface ExtractionOptions { maxPages?: number; maxBytes?: number }
 export interface PdfExtraction { blocks: Block[]; coverage: Coverage; extractionVersion: string }
@@ -74,8 +79,9 @@ export function textItemRegion(item:Item, box:number[], page:number, font:Font):
 /** One horizontal run of text. `em` is the run's font size as a fraction of the page width, so
  * every "how far apart" rule below scales with the paper's own type size instead of a fixed
  * page fraction — a column gutter is ~1.5–2em in every common template, a word space ≤ 0.6em. */
-interface Line { text:string; region:Region; size:number; baseline:number; uncertain:boolean; pieces:{x:number;text:string}[]; fontFamily:'serif'|'sans'; fontWeight:'normal'|'bold'; fontSize:number; em:number; chars:number; boldChars:number; sizeChars:Record<string,number>; leadX:number; leadBold:boolean; baselineChars:number }
-interface Draft { kind:Block['kind']; text:string; regions:Region[]; uncertain:boolean; fontFamily:'serif'|'sans'; fontWeight:'normal'|'bold'; fontSize:number; pageOrdinal:number; chars:number; boldChars:number; sizeChars:Record<string,number> }
+interface Line { text:string; region:Region; size:number; baseline:number; uncertain:boolean; pieces:SourcePiece[]; fontFamily:'serif'|'sans'; fontWeight:'normal'|'bold'; fontSize:number; em:number; chars:number; boldChars:number; sizeChars:Record<string,number>; leadX:number; leadBold:boolean; baselineChars:number }
+/** `breaks` are the offsets of the spaces in `text` that join one printed line to the next. */
+interface Draft { kind:Block['kind']; text:string; regions:Region[]; uncertain:boolean; fontFamily:'serif'|'sans'; fontWeight:'normal'|'bold'; fontSize:number; pageOrdinal:number; chars:number; boldChars:number; sizeChars:Record<string,number>; sourceSpans?:Block['sourceSpans']; breaks:number[] }
 /** The body type size (points, to the half point) of the characters counted: the size that sets
  * the most of them, the larger one on a tie ("PE_pos.": three body glyphs, three subscript ones).
  * A footnote reads 9pt beside body text's 10pt, whatever marker it opens with. */
@@ -220,6 +226,8 @@ const wordCount=(text:string)=>text.split(/\s+/).filter(w=>/\p{L}{2,}/u.test(w))
 const letterRatio=(text:string)=>{ const solid=text.replace(/\s/g,''); return solid.length ? (solid.match(/\p{L}/gu)?.length??0)/solid.length : 0; };
 const MATH_MARKS=/[=∑∫≠≤≥±×÷√∂∇∞→←∈∉⊂⊆∀∃λθαβγδεσμπΣΠΩω^]/u;
 const EQUATION_TAG=/\(\d+[a-z]?\)\s*$/;
+/** A crop of text that is no prose: an equation when it shows math or numbers. */
+const cropKind=(text:string):'equation'|'unsupported'=>MATH_MARKS.test(text)||EQUATION_TAG.test(text)||/\d/.test(text) ? 'equation' : 'unsupported';
 /** A list item's bullet: itemize's "•" and its nested marks, or a nested "–" item. */
 const BULLET=/^(?:[•◦▪▫‣∙●○■□]|–(?=\s))\s*\S/;
 /** "(3)" closes a display equation; "Eq. (3)" or "Section (2)" closing a line is prose. */
@@ -299,13 +307,14 @@ function boxesClose(a:Region, b:Region, gap:number):boolean {
 }
 /** Groups nearby graphic fragments into one region per visual figure/table, instead of unioning
  * every mark on the page into one box that would span (and crop) the body text between them. */
-function clusterFigures(regions:Region[], gap:number):Region[] {
+function clusterFigures(regions:Region[], gap:number, barriers:readonly Region[]=[]):Region[] {
   const groups:Region[][] = regions.map(r=>[r]);
   for(let merged=true; merged;) {
     merged=false;
     for(let i=0;i<groups.length && !merged;i++) {
       for(let j=i+1;j<groups.length;j++) {
-        if(boxesClose(union(groups[i]),union(groups[j]),gap)) { groups[i]=groups[i].concat(groups[j]); groups.splice(j,1); merged=true; break; }
+        const left=union(groups[i]),right=union(groups[j]);
+        if(boxesClose(left,right,gap) && !crossesCaption(left,right,barriers)) { groups[i]=groups[i].concat(groups[j]); groups.splice(j,1); merged=true; break; }
       }
     }
   }
@@ -393,6 +402,29 @@ function layout(lines:Line[]):Line[][] {
   return bands.filter(b=>b.length);
 }
 interface TableCandidate { lines:Line[]; region:Region }
+/** A caption separates neighbouring visual items, even when its text extends beyond them. */
+function crossesCaption(a:Region,b:Region,captions:readonly Region[]):boolean {
+  const box=union([a,b]);
+  return captions.some(c=>c.page===box.page && Math.min(c.x+c.width,box.x+box.width)-Math.max(c.x,box.x)>1e-6
+    && Math.min(c.y+c.height,box.y+box.height)-Math.max(c.y,box.y)>1e-6);
+}
+
+/** Protect label lines and their immediate wrapped continuation before detecting visual crops. */
+function captionLinesOf(lines:Line[],kindOf:(line:Line)=>LineKind):Set<Line> {
+  const protectedLines=new Set(lines.filter(line=>kindOf(line)==='caption'));
+  for(const first of [...protectedLines]) {
+    let last=first;
+    for(const line of [...lines].filter(line=>line.region.y>first.region.y).sort((a,b)=>a.region.y-b.region.y)) {
+      if(/[.!?]$/.test(last.text)) break;
+      if(Math.abs(line.region.x-last.region.x)>.035 && Math.abs(line.region.x+line.region.width/2-(last.region.x+last.region.width/2))>.03) continue;
+      const gap=line.region.y-(last.region.y+last.region.height);
+      if(gap>last.region.height*1.2) break;
+      if(line.baseline<=last.baseline || kindOf(line)==='caption' || kindOf(line)==='heading' || Math.abs(line.size-last.size)>last.size*.15) break;
+      protectedLines.add(line);last=line;
+    }
+  }
+  return protectedLines;
+}
 const isNumericCell=(text:string)=>/\d/.test(text) && letterRatio(text)<.5;
 const lowercaseRatio=(text:string)=>{ const solid=text.replace(/\s/g,''); return solid.length ? (solid.match(/\p{Ll}/gu)?.length??0)/solid.length : 0; };
 /** A line of running text — long, lowercase, filling half of a box — is never a table cell. */
@@ -406,7 +438,8 @@ const isRunningProse=(line:Line, box:Region)=>wordCount(line.text)>=8 && lowerca
  * A framed block with only fragments between two rules of one width (an algorithm listing)
  * is kept the same way. A line of running prose inside the box means this is no table.
  */
-function findTables(lines:Line[], kindOf:(l:Line)=>LineKind, gutter:Gutter|null, rules:Region[], proseWidth:number):TableCandidate[] {
+function findTables(lines:Line[], kindOf:(l:Line)=>LineKind, gutter:Gutter|null, rules:Region[], proseWidth:number, captionLines:Set<Line>):TableCandidate[] {
+  const captions=[...captionLines].map(line=>line.region);
   const side=(l:Line)=>gutter!==null && l.region.x>=gutter.right-.004 ? 1 : 0;
   const rows:Line[][]=[];
   for(const line of lines) {
@@ -414,13 +447,14 @@ function findTables(lines:Line[], kindOf:(l:Line)=>LineKind, gutter:Gutter|null,
     if(row) row.push(line); else rows.push([line]);
   }
   const cellRows=rows
-    .filter(r=>r.length>=2 && r.every(l=>l.region.width<.4) && (r.length>=3 || r.some(l=>isNumericCell(l.text))))
+    .filter(r=>r.length>=2 && r.every(l=>l.region.width<.4 && !captionLines.has(l)) && (r.length>=3 || r.some(l=>isNumericCell(l.text))))
     .map(r=>[...r].sort((a,b)=>a.region.x-b.region.x))
     .sort((a,b)=>a[0].region.y-b[0].region.y);
   const candidates:Line[][][]=[];
   for(const row of cellRows) {
     const previous=candidates.at(-1), last=previous?.at(-1);
-    if(previous && last && side(last[0])===side(row[0]) && row[0].region.y-Math.max(...last.map(l=>l.region.y+l.region.height))<.05) previous.push(row);
+    if(previous && last && side(last[0])===side(row[0]) && row[0].region.y-Math.max(...last.map(l=>l.region.y+l.region.height))<.05
+      && !crossesCaption(union(last.map(l=>l.region)),union(row.map(l=>l.region)),captions)) previous.push(row);
     else candidates.push([row]);
   }
   // Real grids keep their cells in columns: two consecutive rows share at least two cell
@@ -441,7 +475,7 @@ function findTables(lines:Line[], kindOf:(l:Line)=>LineKind, gutter:Gutter|null,
     if(gap<.015 || gap>.5) continue;
     const box=union([top,bottom]);
     const inside=lines.filter(l=>centerInside(l,box,0));
-    if(inside.length<2 || inside.some(l=>isRunningProse(l,box))) continue;
+    if(inside.length<2 || inside.some(l=>captionLines.has(l) || isRunningProse(l,box)) || crossesCaption(top,bottom,captions)) continue;
     if(!inside.some(l=>kindOf(l)==='fragment' || /^\d+:/.test(l.text))) continue;
     seeds.push({lines:inside,region:box});
   }
@@ -456,14 +490,14 @@ function findTables(lines:Line[], kindOf:(l:Line)=>LineKind, gutter:Gutter|null,
       grown=false;
       for(const rule of rules) {
         const overlap=Math.min(rule.x+rule.width,box.x+box.width)-Math.max(rule.x,box.x);
-        if(overlap<Math.min(rule.width,box.width)*.6 || rule.y<box.y-.035 || rule.y>box.y+box.height+.035) continue;
+        if(overlap<Math.min(rule.width,box.width)*.6 || rule.y<box.y-.035 || rule.y>box.y+box.height+.035 || crossesCaption(box,rule,captions)) continue;
         const next=union([box,rule]);
         if(next.y<box.y-1e-6 || next.y+next.height>box.y+box.height+1e-6 || next.x<box.x-1e-6 || next.x+next.width>box.x+box.width+1e-6) { box=next; grown=true; }
       }
       for(const line of lines) {
         if(members.has(line)) continue;
         const kind=kindOf(line);
-        if(kind==='caption' || kind==='reference') continue;
+        if(captionLines.has(line) || kind==='reference' || crossesCaption(box,line.region,captions)) continue;
         const inside=centerInside(line,box,0);
         const cx=line.region.x+line.region.width/2;
         const gapY=Math.max(box.y-(line.region.y+line.region.height),line.region.y-(box.y+box.height),0);
@@ -481,7 +515,7 @@ function findTables(lines:Line[], kindOf:(l:Line)=>LineKind, gutter:Gutter|null,
   for(let merged=true; merged;) {
     merged=false;
     for(let i=0;i<tables.length && !merged;i++) for(let j=i+1;j<tables.length;j++) {
-      if(!boxesClose(tables[i].region,tables[j].region,.01)) continue;
+      if(!boxesClose(tables[i].region,tables[j].region,.01) || crossesCaption(tables[i].region,tables[j].region,captions)) continue;
       tables[i]={lines:[...new Set([...tables[i].lines,...tables[j].lines])],region:union([tables[i].region,tables[j].region])};
       tables.splice(j,1); merged=true; break;
     }
@@ -506,13 +540,14 @@ export async function extractPdf(bytes:Uint8Array, paperKey:string, options:Extr
       const page=await doc.getPage(pageNum);
       let ordinal=0;
       const push=(draft:Draft)=>{ drafts.push(draft); };
-      const crop=(kind:'figure'|'table'|'equation'|'unsupported', region:Region, text=''):Draft=>({kind,text,regions:[region],uncertain:true,fontFamily:'serif',fontWeight:'normal',fontSize:0,pageOrdinal:ordinal++,chars:0,boldChars:0,sizeChars:{}});
+      const crop=(kind:'figure'|'table'|'equation'|'unsupported', region:Region, text=''):Draft=>({kind,text,regions:[region],uncertain:true,fontFamily:'serif',fontWeight:'normal',fontSize:0,pageOrdinal:ordinal++,chars:0,boldChars:0,sizeChars:{},breaks:[]});
       try {
         // Fetching the operator list first populates page.commonObjs with resolved font
         // objects (bold, etc.); getTextContent's per-item styles never carry that.
         const operators=await page.getOperatorList();
         const content=await page.getTextContent();
         const pageHeight=page.view[3]-page.view[1], pageWidth=page.view[2]-page.view[0];
+        const softEnds=softHyphenEnds(operators.fnArray.flatMap((op,i)=>op===OPS.showText && Array.isArray(operators.argsArray[i]?.[0]) ? [operators.argsArray[i][0] as unknown[]] : []));
         const raw:Line[]=[]; let failed=false;
         for(const item of content.items) {
           if(!('str' in item)||!item.str.trim()) continue;
@@ -523,9 +558,11 @@ export async function extractPdf(bytes:Uint8Array, paperKey:string, options:Extr
           try {
             const font=content.styles[item.fontName] ?? {};
             const region=textItemRegion(item,page.view,pageNum,font);
-            const text=item.str, solid=text.replace(/\s/g,'').length, bold=fontWeightFor(page,item.fontName);
+            const text=softEnds.size ? restoreSoftHyphen(item.str,softEnds) : item.str, solid=text.replace(/\s/g,'').length, bold=fontWeightFor(page,item.fontName);
+            let math=false;
+            try { const resolved=page.commonObjs.has(item.fontName)?page.commonObjs.get(item.fontName):null; math=mathematicalFont(resolved?.name); } catch { /* retain plain source when font identity is unknown */ }
             raw.push({
-              text,pieces:[{x:region.x,text}],region,size:item.height,
+              text,pieces:[{x:region.x,text,region,bold:bold==='bold',math,em:pageWidth>0?item.height/pageWidth:.016}],region,size:item.height,
               baseline:(page.view[3]-item.transform[5])/(page.view[3]-page.view[1]),
               uncertain:!!font.vertical || font.ascent===undefined || /[\uFFFD\u0000]/u.test(text),
               fontFamily:toFontFamily(font.fontFamily), fontWeight:bold,
@@ -562,6 +599,8 @@ export async function extractPdf(bytes:Uint8Array, paperKey:string, options:Extr
           references=flag;
         }
         const kindOf=(l:Line):LineKind=>classify(l,median,refsAt.get(l)??references);
+        const captionLines=captionLinesOf(lines,kindOf);
+        const captionRegions=[...captionLines].map(line=>line.region);
         // Preserve non-text marks conservatively; vector drawings may be tables or equations.
         const graphicRegions:Region[]=[]; const ruleRegions:Region[]=[];
         let matrix=[1,0,0,1,0,0]; const stack:number[][]=[];
@@ -593,19 +632,19 @@ export async function extractPdf(bytes:Uint8Array, paperKey:string, options:Extr
         // Table cells are found on the whole page first and kept out of the column inference:
         // a full-width grid's cells would otherwise read as paired left/right column lines.
         const pageProseWidth=Math.max(0,...lines.filter(l=>kindOf(l)==='paragraph').map(l=>l.region.width));
-        const tableCandidates=findTables(lines,kindOf,gutter,ruleRegions,pageProseWidth);
+        const tableCandidates=findTables(lines,kindOf,gutter,ruleRegions,pageProseWidth,captionLines);
         const tableLines=new Set(tableCandidates.flatMap(t=>t.lines));
         const free=lines.filter(l=>!tableLines.has(l));
         const figureClusters:Region[]=[]; const absorbed=new Set<Line>();
-        for(const cluster of clusterFigures(graphicRegions,FIGURE_CLUSTER_GAP)) {
-          const inside=free.filter(l=>centerInside(l,cluster,0));
+        for(const cluster of clusterFigures(graphicRegions,FIGURE_CLUSTER_GAP,captionRegions)) {
+          const inside=free.filter(l=>!captionLines.has(l) && centerInside(l,cluster,0));
           if(inside.filter(l=>wordCount(l.text)>=5).length>=3) continue;
           const mine=new Set<Line>(inside);
-          for(const l of free) if(!absorbed.has(l) && kindOf(l)==='fragment' && !/[.!?]$/.test(l.text) && centerInside(l,cluster,l.region.height*1.5)) mine.add(l);
+          for(const l of free) if(!absorbed.has(l) && !captionLines.has(l) && !crossesCaption(cluster,l.region,captionRegions) && kindOf(l)==='fragment' && !/[.!?]$/.test(l.text) && centerInside(l,cluster,l.region.height*1.5)) mine.add(l);
           // A sub-figure's title sits just above its drawing ("Scaled Dot-Product Attention"): a
           // short, unpunctuated line centred over the cluster is part of the picture, not prose.
           for(const l of free) {
-            if(absorbed.has(l) || mine.has(l) || kindOf(l)==='heading' || kindOf(l)==='caption') continue;
+            if(absorbed.has(l) || mine.has(l) || kindOf(l)==='heading' || captionLines.has(l) || crossesCaption(cluster,l.region,captionRegions)) continue;
             const cx=l.region.x+l.region.width/2, bottom=l.region.y+l.region.height;
             if(cx>=cluster.x && cx<=cluster.x+cluster.width && bottom<=cluster.y+l.region.height*.5 && cluster.y-bottom<l.region.height*1.6
               && wordCount(l.text)<=6 && l.region.width<Math.max(cluster.width*1.6,.2) && !/[.!?:,;]$/.test(l.text)) mine.add(l);
@@ -626,7 +665,7 @@ export async function extractPdf(bytes:Uint8Array, paperKey:string, options:Extr
           for(let merged=true;merged;) {
             merged=false;
             for(let fi=0;fi<figureClusters.length;fi++) {
-              if(tableGraphicIndexes.has(fi) || !boxesClose(tables[ti],figureClusters[fi],FIGURE_CLUSTER_GAP)) continue;
+              if(tableGraphicIndexes.has(fi) || !boxesClose(tables[ti],figureClusters[fi],FIGURE_CLUSTER_GAP) || crossesCaption(tables[ti],figureClusters[fi],captionRegions)) continue;
               tables[ti]=union([tables[ti],figureClusters[fi]]);
               tableGraphicIndexes.add(fi);
               merged=true;
@@ -741,7 +780,7 @@ export async function extractPdf(bytes:Uint8Array, paperKey:string, options:Extr
               else if(entry.table) push(crop('table',entry.table));
               else {
                 const text=normalizeText(entry.cluster!.map(l=>l.text).join(' '));
-                push(crop(MATH_MARKS.test(text)||EQUATION_TAG.test(text)||/\d/.test(text) ? 'equation' : 'unsupported', union(entry.cluster!.map(l=>l.region)), text));
+                push(crop(cropKind(text), union(entry.cluster!.map(l=>l.region)), text));
               }
               current=undefined; last=undefined;
               continue;
@@ -802,12 +841,12 @@ export async function extractPdf(bytes:Uint8Array, paperKey:string, options:Extr
             // the margin; the References heading itself never joins the first entry.
             const newEntry=kind==='reference' && last!==undefined && (/^\[\d+\]/.test(line.text) || line.region.x<last.region.x-line.em*.6 || (current!==undefined && isReferencesHeading(current.text)));
             const canJoin=current && current.kind===kind && (['paragraph','reference','caption'].includes(kind) || headingContinues) && (near || headingContinues) && (!indented || headingContinues) && !newEntry && !(spaced && (kind==='paragraph' || kind==='caption')) && !startsItem && !leavesItem && !resized && !runIn;
-            if(canJoin) {current!.text=normalizeText(current!.text+' '+line.text);current!.regions.push(line.region);current!.uncertain ||= line.uncertain;current!.chars+=line.chars;current!.boldChars+=line.boldChars;current!.sizeChars=mergeSizes(current!.sizeChars,line.sizeChars);}
+            if(canJoin) {if(!sameVisualLine) current!.breaks.push(current!.text.length);current!.sourceSpans=[...(current!.sourceSpans??[]),...offsetSourceSpans(sourceSpansForPieces(line.pieces,line.text),current!.text.length+1)];current!.text=normalizeText(current!.text+' '+line.text);current!.regions.push(line.region);current!.uncertain ||= line.uncertain;current!.chars+=line.chars;current!.boldChars+=line.boldChars;current!.sizeChars=mergeSizes(current!.sizeChars,line.sizeChars);}
             else {
               // Multi-line paragraphs need one representative font impression. Face and size come
               // from the opening line; weight is settled over the whole block at the end, since a
               // bold run-in heading ("Encoder:") must not make its paragraph bold.
-              current={kind,text:normalizeText(line.text),regions:[line.region],uncertain:line.uncertain,fontFamily:line.fontFamily,fontWeight:line.fontWeight,fontSize:line.fontSize,pageOrdinal:ordinal++,chars:line.chars,boldChars:line.boldChars,sizeChars:line.sizeChars};
+              current={kind,text:normalizeText(line.text),regions:[line.region],uncertain:line.uncertain,fontFamily:line.fontFamily,fontWeight:line.fontWeight,fontSize:line.fontSize,pageOrdinal:ordinal++,chars:line.chars,boldChars:line.boldChars,sizeChars:line.sizeChars,sourceSpans:sourceSpansForPieces(line.pieces,line.text),breaks:[]};
               push(current);
             }
             last=line;
@@ -849,11 +888,34 @@ export async function extractPdf(bytes:Uint8Array, paperKey:string, options:Extr
       const b=next.regions[0];
       // The next page, or the next column of this page: it starts well to the right, higher up.
       if(b.page!==a.page+1 && !(b.page===a.page && b.x-a.x>.25 && b.y<a.y)) continue;
+      prev.sourceSpans=[...(prev.sourceSpans??[]),...offsetSourceSpans(next.sourceSpans??[],prev.text.length+1)];
+      prev.breaks.push(prev.text.length,...next.breaks.map(at=>at+prev.text.length+1));
       prev.text=normalizeText(prev.text+' '+next.text); prev.regions.push(...next.regions); prev.uncertain=true;
       prev.chars+=next.chars; prev.boldChars+=next.boldChars; prev.sizeChars=mergeSizes(prev.sizeChars,next.sizeChars);
       drafts.splice(j,1); i--;
     }
-    const blocks=drafts.map((d,order):Block=>({blockId:sha256(`${paperKey}:${EXTRACTION_VERSION}:${order}:${d.text}`).slice(0,32),paperKey,order,kind:d.kind,sourceText:d.text,sourceHash:sha256(d.text),regions:d.regions,alignment:d.uncertain?'uncertain':'exact',translatable:['paragraph','heading','caption'].includes(d.kind)&&!!d.text,fontFamily:d.fontFamily,fontWeight:d.chars>0 ? (d.boldChars/d.chars>=.5 ? 'bold' : 'normal') : d.fontWeight,fontSize:d.fontSize,pageOrdinal:d.pageOrdinal}));
+    // Lines that are no prose (a worked example's answer options, a listing's last lines) can
+    // run off the foot of a column or page just as a paragraph does. Cut there, they became two
+    // unrelated crops; still left open — no closing stop, no equation number — the crop that ends
+    // a column or page continues in the crop that opens the next one. Together they are one
+    // source passage: one crop, never translated, shown part by part in its own shape.
+    const textCrop=(d:Draft)=>(d.kind==='equation' || d.kind==='unsupported') && d.text!=='';
+    for(let i=0;i+1<drafts.length;i++) {
+      const prev=drafts[i], next=drafts[i+1];
+      if(!textCrop(prev) || !textCrop(next) || /[.!?]$/.test(prev.text) || hasEquationTag(prev.text)) continue;
+      const a=prev.regions.at(-1)!, b=next.regions[0];
+      if(b.page!==a.page+1 && !(b.page===a.page && b.x-a.x>.25 && b.y<a.y)) continue;
+      prev.text=normalizeText(prev.text+' '+next.text); prev.regions.push(...next.regions); prev.kind=cropKind(prev.text);
+      drafts.splice(i+1,1); i--;
+    }
+    // Words broken at a line end are put back once every block is final, with the whole paper
+    // as the word list that tells a broken word from a compound (see hyphen.ts).
+    const vocabulary=hyphenVocabulary(drafts.filter(d=>['paragraph','heading','caption','reference'].includes(d.kind)));
+    for(const d of drafts) if(d.text) {
+      const joined=joinLineBreakHyphens(d,vocabulary);
+      d.text=joined.text; d.sourceSpans=joined.sourceSpans;
+    }
+    const blocks=drafts.map((d,order):Block=>({blockId:sha256(`${paperKey}:${BLOCK_ID_VERSION}:${order}:${d.text}`).slice(0,32),paperKey,order,kind:d.kind,sourceText:d.text,sourceHash:sha256(d.text),regions:d.regions,alignment:d.uncertain?'uncertain':'exact',translatable:['paragraph','heading','caption'].includes(d.kind)&&!!d.text,fontFamily:d.fontFamily,fontWeight:d.chars>0 ? (d.boldChars/d.chars>=.5 ? 'bold' : 'normal') : d.fontWeight,fontSize:d.fontSize,pageOrdinal:d.pageOrdinal,...(d.sourceSpans?.length?{sourceSpans:d.sourceSpans}:{})}));
     return {blocks,coverage:{totalPages:doc.numPages,textPages,unsupportedPages},extractionVersion:EXTRACTION_VERSION};
   } catch(error) {
     if(error instanceof SourceError) throw error;

@@ -9,15 +9,18 @@ import type {
   Translator,
   Usage,
 } from '../../shared/contracts';
+import { isTranslated, selectTranslations } from '../../shared/translations';
 import { PaperStore, appError, notFound } from '../store/index';
 import { JobManager } from '../jobs/state';
+import { FORMAT_PROMPT_VERSION, remapMathMarkers, splitFormattedBlock, validateFormattedTranslation } from './format';
 
 /**
- * Version of the PaperRead translation rules. It is part of a translation's
- * identity (blockId + sourceHash + modelId + promptVersion), so bumping it
- * deliberately invalidates reuse of every previously stored translation.
+ * Version of the PaperRead translation rules. Every request is sent with it and every
+ * result records it, so the reader can show each paragraph by the rules that made it. A
+ * completed translation made with an older version still counts as finished: bumping it
+ * never re-sends (or re-bills) a paragraph by itself.
  */
-export const PROMPT_VERSION = 'paperread-ko-v1';
+export const PROMPT_VERSION = FORMAT_PROMPT_VERSION;
 
 /** Upper bound for an accepted translation body; a longer answer is not a paragraph. */
 const MAX_TRANSLATION_CHARS = 100_000;
@@ -54,6 +57,8 @@ export interface PipelineOptions {
   translator: Translator;
   log?: (event: PipelineLogEvent) => void;
   now?: () => Date;
+  /** Bound concurrent isolated page turns; 1 is also useful for provider diagnostics. */
+  pageConcurrency?: 1 | 2;
 }
 
 export interface RunOptions {
@@ -65,6 +70,8 @@ export interface RunOptions {
 interface RunTracker {
   usage: Usage;
   processed: number;
+  /** Persist reduced batch sizes across the deferred pass, without extra attempts. */
+  formatBatchSizes: Map<number, number>;
 }
 
 /** How a single batch attempt (a whole page, or a split half of one) ended. */
@@ -119,7 +126,15 @@ export function paperContext(paper: Paper): string {
   lines.push(`논문 제목: ${title ? title.slice(0, 300) : '확인 불가'}`);
   const authors = paper.authors.slice(0, 5).map((a) => a.slice(0, 80));
   lines.push(`저자: ${authors.length > 0 ? authors.join(', ') : '확인 불가'}`);
-  if (paper.arxivId !== null && paper.version !== null) lines.push(`arXiv: ${paper.arxivId}v${paper.version}`);
+  if (paper.arxivId !== null && paper.version !== null) {
+    lines.push(`arXiv: ${paper.arxivId}v${paper.version}`);
+  } else if (paper.sourceKind === 'publication') {
+    // A publisher PDF is its own source, not an arXiv revision. Query parameters
+    // can contain expiring download credentials and are never needed for context.
+    let source = '공개 PDF';
+    try { source = new URL(paper.sourceUrl).hostname.slice(0, 253) || source; } catch { /* old malformed source metadata */ }
+    lines.push(`출처: ${source}`);
+  }
   return lines.join('\n');
 }
 
@@ -156,16 +171,17 @@ export function mergeUsage(base: Usage, next: Usage): Usage {
 }
 
 /**
- * Sequential, resumable translation of one paper revision.
+ * Bounded, resumable translation of one paper revision.
  *
  * Guarantees enforced here:
  *  - nothing leaves the machine until `run` is called for a *running* job;
  *    opening or reading a paper never triggers a generation request
- *  - blocks are processed strictly in `order`, and each verified paragraph is
- *    committed before the next request starts, so reading can begin immediately
+ *  - pages start in reading order, with at most two independent page turns;
+ *    each verified paragraph is committed as soon as its page returns
  *  - `translatable:false` blocks are recorded `unsupported` without a request
- *  - an already completed translation for the same
- *    blockId+sourceHash+modelId+promptVersion is reused, skipping the request
+ *  - an already completed translation for the same blockId+sourceHash+modelId is
+ *    reused, whichever prompt version made it, skipping the request; anything still
+ *    sent uses the current PROMPT_VERSION and is recorded with it
  *  - the job generation is re-checked before every request and again before
  *    every write, so a cancel/delete discards in-flight results
  *  - auth / quota / missing-model stop the job immediately with a mapped
@@ -177,6 +193,7 @@ export class TranslationPipeline {
   private readonly translator: Translator;
   private readonly log: (event: PipelineLogEvent) => void;
   private readonly now: () => Date;
+  private readonly pageConcurrency: 1 | 2;
   private readonly running = new Map<string, AbortController>();
 
   constructor(options: PipelineOptions) {
@@ -185,6 +202,7 @@ export class TranslationPipeline {
     this.translator = options.translator;
     this.log = options.log ?? (() => {});
     this.now = options.now ?? (() => new Date());
+    this.pageConcurrency = options.pageConcurrency === 1 ? 1 : 2;
   }
 
   /** True while a run loop for this job is in flight in this process. */
@@ -222,23 +240,27 @@ export class TranslationPipeline {
   }
 
   private record(jobId: string, generation: number, translation: Translation): boolean {
-    return this.jobs.acceptResult(jobId, generation, translation);
+    try {
+      if (this.running.get(jobId)?.signal.aborted || this.guard(jobId, generation) === null) return false;
+      return this.jobs.acceptResult(jobId, generation, translation);
+    } catch (cause) {
+      // Stop already-resolved sibling promises in this same microtask turn, before
+      // the worker's async stack unwinds and a sibling can commit another result.
+      this.running.get(jobId)?.abort();
+      throw cause;
+    }
   }
 
   /**
-   * Translatable blocks on a page that still need a request. A block already carrying a
-   * completed translation is done. Failed translations are provisional until the page's
+   * Translatable blocks on a page that still need a request. A block whose current text already
+   * has a completed, non-empty translation on the job's model is done, whatever later attempt
+   * failed (the shared selection rule). Failed translations are provisional until the page's
    * bounded retries are exhausted, so an empty or malformed first response cannot make a
    * paragraph permanently failed while a later response is usable.
    */
   private pending(job: Job, blocks: Block[]): Block[] {
-    const attempted = new Set(
-      this.store
-        .listTranslations(job.paperKey)
-        .filter((t) => t.modelId === job.modelId && t.promptVersion === job.promptVersion && t.status === 'completed')
-        .map((t) => `${t.blockId}\u0000${t.sourceHash}`),
-    );
-    return blocks.filter((b) => !attempted.has(`${b.blockId}\u0000${b.sourceHash}`));
+    const selected = selectTranslations(blocks, this.store.listTranslations(job.paperKey), job.modelId);
+    return blocks.filter((b) => !isTranslated(b, selected.get(b.blockId)));
   }
 
   /**
@@ -258,7 +280,7 @@ export class TranslationPipeline {
     this.running.set(jobId, controller);
     this.log({ event: 'job.start', jobId });
 
-    const tracker: RunTracker = { usage: job.usage, processed: 0 };
+    const tracker: RunTracker = { usage: job.usage, processed: 0, formatBatchSizes: new Map() };
     try {
       const paper = this.store.getPaper(job.paperKey);
       if (paper === null) return this.jobs.getJob(jobId) ?? job;
@@ -280,31 +302,16 @@ export class TranslationPipeline {
 
       const pages = groupByPage(blocks.filter((b) => b.translatable));
       const pageNumbers = [...pages.keys()].sort((a, b) => a - b);
-      const deferred: number[] = [];
-
-      for (const page of pageNumbers) {
-        const outcome = await this.runPage(jobId, generation, controller, context, pages.get(page)!, tracker, options, false);
-        if (outcome === 'aborted') {
-          this.log({ event: 'job.aborted', jobId, processed: tracker.processed });
-          return this.jobs.getJob(jobId) ?? job;
-        }
-        if (outcome === 'paused' || outcome === 'jobFailed') return this.jobs.getJob(jobId) ?? job;
-        if (outcome === 'deferred') deferred.push(page);
-      }
+      const deferred = await this.runPages(jobId, generation, controller, context, pages, pageNumbers, tracker, options, false);
 
       // A page that kept failing is retried once more here, after every other page has
       // had its turn, so one stubborn page cannot block the rest of the paper.
-      for (const page of deferred) {
-        const outcome = await this.runPage(jobId, generation, controller, context, pages.get(page)!, tracker, options, true);
-        if (outcome === 'aborted') {
-          this.log({ event: 'job.aborted', jobId, processed: tracker.processed });
-          return this.jobs.getJob(jobId) ?? job;
-        }
-        if (outcome === 'paused' || outcome === 'jobFailed') return this.jobs.getJob(jobId) ?? job;
+      if (!controller.signal.aborted) {
+        await this.runPages(jobId, generation, controller, context, pages, deferred, tracker, options, true);
       }
 
       const final = this.guard(jobId, generation);
-      if (final === null) return this.jobs.getJob(jobId) ?? job;
+      if (final === null || controller.signal.aborted) return this.jobs.getJob(jobId) ?? job;
       // completed vs completed_with_gaps is decided purely by translatable-block coverage;
       // an untranslatable block was already recorded above and never enters this count.
       const finished = this.jobs.finalizeJob(jobId);
@@ -316,9 +323,70 @@ export class TranslationPipeline {
         durationMs: this.now().getTime() - started,
       });
       return finished;
+    } catch (cause) {
+      // Disk or progress persistence failures must stop generation, not be retried as
+      // malformed model responses. If the disk still permits it, expose a failed job.
+      controller.abort();
+      if (this.guard(jobId, generation) !== null) {
+        try { this.jobs.failJob(jobId, toAppError(cause)); } catch { /* retain the original save failure */ }
+      }
+      throw cause;
     } finally {
+      controller.abort();
       this.running.delete(jobId);
     }
+  }
+
+  /** Two workers share a stop signal, but never a page or a provider thread. Await
+   * both workers even after failure so a subsequent resume cannot race this run. */
+  private async runPages(
+    jobId: string,
+    generation: number,
+    controller: AbortController,
+    context: string,
+    pages: Map<number, Block[]>,
+    pageNumbers: number[],
+    tracker: RunTracker,
+    options: RunOptions,
+    final: boolean,
+  ): Promise<number[]> {
+    let next = 0;
+    const active = new Set<number>();
+    const deferred: number[] = [];
+    const updatePage = () => {
+      const current = this.guard(jobId, generation);
+      if (current === null || controller.signal.aborted) return;
+      const page = active.size > 0 ? Math.min(...active) : null;
+      if (current.currentPage !== page) this.jobs.updateCurrentPage(jobId, page);
+    };
+    const worker = async () => {
+      try {
+        while (next < pageNumbers.length && !controller.signal.aborted) {
+          const current = this.guard(jobId, generation);
+          if (current === null) { controller.abort(); return; }
+          const page = pageNumbers[next++]!;
+          const blocks = pages.get(page)!;
+          if (this.pending(current, blocks).length === 0) continue;
+          active.add(page);
+          try {
+            updatePage();
+            const outcome = await this.runPage(jobId, generation, controller, context, blocks, tracker, options, final);
+            if (outcome === 'deferred') deferred.push(page);
+            if (outcome === 'aborted' || outcome === 'paused' || outcome === 'jobFailed') controller.abort();
+          } finally {
+            active.delete(page);
+            updatePage();
+          }
+        }
+      } catch (cause) {
+        controller.abort();
+        throw cause;
+      }
+    };
+    const outcomes = await Promise.allSettled(Array.from({ length: Math.min(this.pageConcurrency, pageNumbers.length) }, worker));
+    const failure = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected');
+    if (failure) throw failure.reason;
+    return deferred.sort((a, b) => a - b);
   }
 
   /**
@@ -343,18 +411,27 @@ export class TranslationPipeline {
     let remaining = this.pending(current0, blocks);
     if (remaining.length === 0) return 'complete';
 
-    this.jobs.updateCurrentPage(jobId, pageNumberOf(blocks[0]));
-
     let lastError: AppError | null = null;
     let attempts = 0;
+    const page = pageNumberOf(blocks[0]!);
     while (remaining.length > 0 && attempts < PAGE_ATTEMPTS_PER_ROUND) {
       attempts += 1;
-      const result = await this.translateBatch(jobId, generation, controller, context, remaining, tracker, options);
-      if (result.kind === 'aborted' || result.kind === 'paused' || result.kind === 'jobFailed') return result.kind;
-      if (result.lastError) lastError = result.lastError;
+      const batchSize = Math.min(tracker.formatBatchSizes.get(page) ?? remaining.length, remaining.length);
+      let invalidFormat = false;
+      for (let offset = 0; offset < remaining.length; offset += batchSize) {
+        const result = await this.translateBatch(jobId, generation, controller, context, remaining.slice(offset, offset + batchSize), tracker, options);
+        if (result.kind === 'aborted' || result.kind === 'paused' || result.kind === 'jobFailed') return result.kind;
+        if (result.lastError) lastError = result.lastError;
+        invalidFormat ||= result.lastError?.code === 'INVALID_TRANSLATION';
+      }
       const after = this.guard(jobId, generation);
       if (after === null) return 'aborted';
       remaining = this.pending(after, remaining);
+      if (invalidFormat && remaining.length > 0) {
+        // Smaller requests isolate difficult paragraphs. Every paragraph still has
+        // at most the same 3 + 3 attempts; accepted paragraphs never enter them again.
+        tracker.formatBatchSizes.set(page, Math.max(1, Math.floor(Math.min(batchSize, remaining.length) / 2)));
+      }
     }
     if (remaining.length === 0) return 'complete';
     if (!final) return 'deferred';
@@ -399,11 +476,11 @@ export class TranslationPipeline {
     const paragraphs = blocks.map((block) => ({ number: block.pageOrdinal, block }));
     let output: { results: { number: number; text: string }[]; usage: Usage };
     try {
-      const input: TranslationPageInput = { paragraphs, modelId: current.modelId, context, signal: controller.signal };
+      const input: TranslationPageInput = { paragraphs, modelId: current.modelId, context, signal: controller.signal, promptVersion: PROMPT_VERSION };
       output = await this.raceAbort(this.translator.translatePage(input), controller.signal);
     } catch (cause) {
       const error = toAppError(cause);
-      const terminal = this.stopForTerminalError(jobId, error, tracker);
+      const terminal = this.stopForTerminalError(jobId, generation, controller, error, tracker);
       if (terminal !== null) return terminal;
       if (error.code === 'TOO_LARGE' && blocks.length > 1) {
         // Only the page that overflowed the model's input limit is split, and only until
@@ -417,18 +494,22 @@ export class TranslationPipeline {
       }
       if (error.code === 'TOO_LARGE' && blocks.length === 1) {
         const paragraph = paragraphs[0]!;
+        let saving = false;
         try {
           const output = await this.translateOversizedParagraph(jobId, generation, paragraph.block, context, controller.signal);
           if (output === null) return { kind: 'aborted' };
           const after = this.guard(jobId, generation);
           if (after === null || controller.signal.aborted) return { kind: 'aborted' };
+          const text = validateTranslationText(output.text);
+          validateFormattedTranslation(paragraph.block, text, PROMPT_VERSION);
+          saving = true;
           const accepted = this.record(jobId, generation, {
             blockId: paragraph.block.blockId,
             sourceHash: paragraph.block.sourceHash,
             modelId: after.modelId,
-            promptVersion: after.promptVersion,
+            promptVersion: PROMPT_VERSION,
             status: 'completed',
-            text: validateTranslationText(output.text),
+            text,
             error: null,
             completedAt: nowIso(this.now),
           });
@@ -440,8 +521,9 @@ export class TranslationPipeline {
           options.onBlockDone?.(paragraph.block.blockId);
           return { kind: 'attempted' };
         } catch (fragmentCause) {
+          if (saving) throw fragmentCause;
           const fragmentError = toAppError(fragmentCause);
-          const terminal = this.stopForTerminalError(jobId, fragmentError, tracker);
+          const terminal = this.stopForTerminalError(jobId, generation, controller, fragmentError, tracker);
           if (terminal !== null) return terminal;
           return { kind: 'attempted', lastError: fragmentError };
         }
@@ -463,28 +545,31 @@ export class TranslationPipeline {
         itemError = toAppError(appError('INVALID_TRANSLATION', '번역 응답에 요청한 문단 번호가 없습니다.', false));
         continue;
       }
+      let text: string;
       try {
-        const text = validateTranslationText(match.text);
-        const accepted = this.record(jobId, generation, {
-          blockId: paragraph.block.blockId,
-          sourceHash: paragraph.block.sourceHash,
-          modelId: after.modelId,
-          promptVersion: after.promptVersion,
-          status: 'completed',
-          text,
-          error: null,
-          completedAt: nowIso(this.now),
-        });
-        if (!accepted) return { kind: 'aborted' };
-        tracker.processed += 1;
-        this.log({ event: 'block.done', jobId });
-        options.onBlockDone?.(paragraph.block.blockId);
+        text = validateTranslationText(match.text);
+        validateFormattedTranslation(paragraph.block, text, PROMPT_VERSION);
       } catch (cause) {
-        // Leave the paragraph pending. A malformed item consumes this page attempt, but
-        // only the final deferred pass makes it a permanent failed translation.
+        // Retry only malformed output. A failed disk write is not another paid turn.
         itemError = toAppError(cause);
+        continue;
       }
+      const accepted = this.record(jobId, generation, {
+        blockId: paragraph.block.blockId,
+        sourceHash: paragraph.block.sourceHash,
+        modelId: after.modelId,
+        promptVersion: PROMPT_VERSION,
+        status: 'completed',
+        text,
+        error: null,
+        completedAt: nowIso(this.now),
+      });
+      if (!accepted) return { kind: 'aborted' };
+      tracker.processed += 1;
+      this.log({ event: 'block.done', jobId });
+      options.onBlockDone?.(paragraph.block.blockId);
     }
+    if (controller.signal.aborted || this.guard(jobId, generation) === null) return { kind: 'aborted' };
     tracker.usage = mergeUsage(tracker.usage, output.usage ?? emptyUsage());
     this.jobs.updateUsage(jobId, tracker.usage);
     return { kind: 'attempted', lastError: itemError };
@@ -496,18 +581,25 @@ export class TranslationPipeline {
    */
   private stopForTerminalError(
     jobId: string,
+    generation: number,
+    controller: AbortController,
     error: AppError,
     tracker: RunTracker,
-  ): { kind: 'paused' | 'jobFailed' } | null {
+  ): { kind: 'aborted' | 'paused' | 'jobFailed' } | null {
+    // A sibling may already have paused the job, or reset may have replaced it.
+    // Late provider failures must not mutate that stopped/new generation.
+    if (controller.signal.aborted || this.guard(jobId, generation) === null) return { kind: 'aborted' };
     const pauseReason = PAUSE_CODES[error.code];
     if (pauseReason !== undefined) {
       this.jobs.pauseJob(jobId, pauseReason);
+      controller.abort();
       this.log({ event: 'job.paused', jobId, code: error.code, pauseReason, processed: tracker.processed });
       return { kind: 'paused' };
     }
     if (error.code === 'UNSAFE_RUNTIME') {
       // The proved text-only isolation did not hold: stop, do not retry.
       const failedJob = this.jobs.failJob(jobId, error);
+      controller.abort();
       this.log({ event: 'job.end', jobId, code: error.code, state: failedJob.state, processed: tracker.processed });
       return { kind: 'jobFailed' };
     }
@@ -526,43 +618,22 @@ export class TranslationPipeline {
     const job = this.guard(jobId, generation);
     if (job === null || signal.aborted) return null;
     try {
-      const output = await this.raceAbort(this.translator.translate({ block, modelId: job.modelId, context, signal }), signal);
-      return { text: validateTranslationText(output.text), usage: output.usage ?? emptyUsage() };
+      const output = await this.raceAbort(this.translator.translate({ block, modelId: job.modelId, context, signal, promptVersion: PROMPT_VERSION }), signal);
+      const text = validateTranslationText(output.text);
+      validateFormattedTranslation(block, text, PROMPT_VERSION);
+      return { text, usage: output.usage ?? emptyUsage() };
     } catch (cause) {
       const error = toAppError(cause);
       if (error.code !== 'TOO_LARGE') throw error;
-      const [firstText, secondText] = this.splitSource(block.sourceText);
-      const first = await this.translateOversizedParagraph(jobId, generation, { ...block, sourceText: firstText }, context, signal);
+      const [firstPart, secondPart] = splitFormattedBlock(block);
+      const first = await this.translateOversizedParagraph(jobId, generation, firstPart.block, context, signal);
       if (first === null) return null;
-      const second = await this.translateOversizedParagraph(jobId, generation, { ...block, sourceText: secondText }, context, signal);
+      const second = await this.translateOversizedParagraph(jobId, generation, secondPart.block, context, signal);
       if (second === null) return null;
-      return { text: `${first.text} ${second.text}`, usage: mergeUsage(first.usage, second.usage) };
+      const firstText = remapMathMarkers(first.text, firstPart.indices);
+      const secondText = remapMathMarkers(second.text, secondPart.indices);
+      return { text: `${firstText} ${secondText}`, usage: mergeUsage(first.usage, second.usage) };
     }
-  }
-
-  private splitSource(source: string): [string, string] {
-    const text = source.trim();
-    const characters = Array.from(text);
-    if (characters.length < 2) throw appError('TOO_LARGE', '문단 하나가 번역 입력 한도를 초과했습니다.', false);
-    const middle = Math.floor(characters.length / 2);
-    let cut = middle;
-    for (let offset = 0; offset < middle; offset += 1) {
-      if (/\s/u.test(characters[middle - offset] ?? '')) {
-        cut = middle - offset;
-        break;
-      }
-      if (/\s/u.test(characters[middle + offset] ?? '')) {
-        cut = middle + offset;
-        break;
-      }
-    }
-    const first = characters.slice(0, cut).join('').trim();
-    const second = characters.slice(cut).join('').trim();
-    if (!first || !second) {
-      const hardCut = Math.floor(characters.length / 2);
-      return [characters.slice(0, hardCut).join(''), characters.slice(hardCut).join('')];
-    }
-    return [first, second];
   }
 
   /** The job as it stands now, or null when this run must stop writing. */
@@ -575,6 +646,8 @@ export class TranslationPipeline {
     return job;
   }
 
+  // Nothing is sent for these, so they keep the job's label instead of adding a second
+  // record per prompt version.
   private unsupported(block: Block, job: Job): Translation {
     return {
       blockId: block.blockId,
@@ -593,7 +666,7 @@ export class TranslationPipeline {
       blockId: block.blockId,
       sourceHash: block.sourceHash,
       modelId: job.modelId,
-      promptVersion: job.promptVersion,
+      promptVersion: PROMPT_VERSION,
       status: 'failed',
       text: null,
       error,

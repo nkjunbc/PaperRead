@@ -1,4 +1,5 @@
 import type { Block, Region, Translation } from '../../shared/contracts';
+import { selectTranslations } from '../../shared/translations';
 import { pageRenderSize, type Size } from './geometry';
 import { describeTranslationState } from './status';
 
@@ -18,19 +19,24 @@ export interface KoreanTextItem {
   block: Block;
   column: Column;
   text: string | null;
+  /** Only v2 translations use inline math/emphasis markers. Legacy text stays literal. */
+  promptVersion?: string;
   align: 'center' | 'start';
 }
 
 /** A block whose original appearance is kept — figure/table/equation/reference/unsupported.
- * `region` is the block's bounding box on this one page, in the page's own [0,1] ratio
- * coordinates, ready for `regionToPixels`. `align` and `inset` keep it where the original put it
- * across its column: centred there, or indented by `inset` (page-width fraction) from the
- * column's text edge. */
+ * `region` is the block's bounding box where it starts on this page, in the page's own [0,1]
+ * ratio coordinates, ready for `regionToPixels`. A crop that runs on into the next column or
+ * onto the next page (a worked example's numeric lines) has its later parts in `continued`,
+ * one box per column or page in reading order; they are shown under the first part, set the
+ * same way. `align` and `inset` keep it where the original put it across its column: centred
+ * there, or indented by `inset` (page-width fraction) from the column's text edge. */
 export interface KoreanSourceItem {
   kind: 'source';
   block: Block;
   column: Column;
   region: Region;
+  continued: Region[];
   align: 'center' | 'start';
   inset: number;
 }
@@ -55,6 +61,24 @@ export const PAGE_MARGIN_X = 0.08;
 export const PAGE_MARGIN_TOP = 0.06;
 export const PAGE_MARGIN_BOTTOM = 0.06;
 export const COLUMN_GUTTER = 0.04;
+/** Emitted after a page's typography settles, including when its outer height stays fixed. */
+export const KOREAN_PAGE_LAYOUT_EVENT = 'paperread-korean-page-layout';
+
+export interface KoreanPageFit { fontScale:number; lineHeight:number; paragraphGap:number }
+export interface MeasuredKoreanPageFit extends KoreanPageFit { height:number }
+
+/** Tighten spacing, never the type: at most three layout reads, and a page still longer than
+ * its source grows taller (the Korean page only sets a minimum height) instead of shrinking
+ * its text. fontScale stays 1; it remains part of the fit so saved ink keeps its layout key. */
+export function fitKoreanPageHeight(sourceHeight:number,measure:(fit:KoreanPageFit)=>number):MeasuredKoreanPageFit {
+  const target=sourceHeight*1.051;
+  const check=(fit:KoreanPageFit):MeasuredKoreanPageFit=>({...fit,height:measure(fit)});
+  const spacious=check({fontScale:1,lineHeight:1.6,paragraphGap:.8});
+  if(spacious.height<=target)return spacious;
+  const balanced=check({fontScale:1,lineHeight:1.5,paragraphGap:.55});
+  if(balanced.height<=target)return balanced;
+  return check({fontScale:1,lineHeight:1.4,paragraphGap:.4});
+}
 
 /** A block narrower than this (as a fraction of page width) is counted toward a column;
  * at or above it, the block is treated as spanning the full page width instead. */
@@ -86,16 +110,28 @@ function leadingBoundsOnPage(block: Block, page: number): Region | null {
   return { page, x: left, y: top, width: right - left, height: bottom - top };
 }
 
-/** The union bounding box of a block's regions that fall on `page`, in that page's own
- * [0,1] ratio coordinates. Null when the block has no region on this page at all. */
-function boundsOnPage(block: Block, page: number): Region | null {
-  const onPage = block.regions.filter((region) => region.page === page);
-  if (onPage.length === 0) return null;
-  const left = Math.min(...onPage.map((region) => region.x));
-  const top = Math.min(...onPage.map((region) => region.y));
-  const right = Math.max(...onPage.map((region) => region.x + region.width));
-  const bottom = Math.max(...onPage.map((region) => region.y + region.height));
-  return { page, x: left, y: top, width: right - left, height: bottom - top };
+/** The union bounding box of regions that all sit on one page. */
+function bounds(regions: readonly Region[]): Region {
+  const left = Math.min(...regions.map((region) => region.x));
+  const top = Math.min(...regions.map((region) => region.y));
+  const right = Math.max(...regions.map((region) => region.x + region.width));
+  const bottom = Math.max(...regions.map((region) => region.y + region.height));
+  return { page: regions[0].page, x: left, y: top, width: right - left, height: bottom - top };
+}
+
+/** A block's regions as boxes, one per column or page it runs through, in reading order. It runs
+ * into the next column where a piece far to the side lies wholly above the one before it; pieces
+ * side by side stay one box. */
+function partsOf(block: Block): Region[] {
+  const runs: Region[][] = [];
+  for (const region of block.regions) {
+    const run = runs.at(-1);
+    const previous = run?.at(-1);
+    if (run !== undefined && previous !== undefined && run[0].page === region.page
+      && !(Math.abs(region.x - run[0].x) >= 0.25 && region.y + region.height <= previous.y)) run.push(region);
+    else runs.push([region]);
+  }
+  return runs.map(bounds);
 }
 
 /**
@@ -152,12 +188,13 @@ function translatedText(block: Block, byBlock: ReadonlyMap<string, Translation>)
 /**
  * Build one page's Korean layout: prose blocks carry translated text (or a blank slot),
  * everything else (figure/table/equation/reference/unsupported) carries the original region
- * to crop and place inline, all in the paper's own reading order.
+ * to crop and place inline, all in the paper's own reading order. `modelId` is the job's
+ * model (null without a job); each block shows the record the progress counts.
  */
-export function buildKoreanLayout(blocks: readonly Block[], translations: readonly Translation[], page: number): KoreanPageLayout {
+export function buildKoreanLayout(blocks: readonly Block[], translations: readonly Translation[], page: number, modelId: string | null): KoreanPageLayout {
   const pageBlocks = blocksForPage(blocks, page);
   const columnCount = detectColumnCount(pageBlocks, page);
-  const byBlock = new Map(translations.map((translation) => [translation.blockId, translation] as const));
+  const byBlock = selectTranslations(pageBlocks, translations, modelId);
 
   // The horizontal extent of each column's own content on the original page: a crop is placed
   // against it, so a centred figure or equation stays centred on the Korean page.
@@ -174,13 +211,29 @@ export function buildKoreanLayout(blocks: readonly Block[], translations: readon
     if (column !== 'full') widen('full', box);
   }
 
+  // Text alignment compares headings with the body edges, not with a long heading's own
+  // bounds. A centred two-line title often occupies far more than 70% of the body width.
+  const proseExtents=new Map<Column,[number,number]>();
+  const bodySizes=pageBlocks.filter(block=>block.kind==='paragraph'&&block.fontSize>0).map(block=>block.fontSize).sort((a,b)=>a-b);
+  const bodySize=bodySizes[Math.floor(bodySizes.length/2)]??0;
+  for(const block of pageBlocks.filter(block=>block.kind==='paragraph')) {
+    const box=leadingBoundsOnPage(block,page);
+    if(!box)continue;
+    const column=columnFor(box,columnCount);
+    for(const target of column==='full'?['full'] as const:[column,'full'] as const) {
+      const [lo,hi]=proseExtents.get(target)??[box.x,box.x+box.width];
+      proseExtents.set(target,[Math.min(lo,box.x),Math.max(hi,box.x+box.width)]);
+    }
+  }
+
   const items: KoreanFlowItem[] = [];
   let hasTranslatableBlock = false;
   let hasFailedTranslation = false;
   let hasMissingTranslation = false;
   for (const block of pageBlocks) {
-    const box = boundsOnPage(block, page);
-    if (box === null) continue;
+    const onPage = block.regions.filter((region) => region.page === page);
+    if (onPage.length === 0) continue;
+    const box = bounds(onPage);
     const column = columnFor(leadingBoundsOnPage(block, page) ?? box, columnCount);
 
     if (TEXT_KINDS.has(block.kind) && block.translatable) {
@@ -188,16 +241,27 @@ export function buildKoreanLayout(blocks: readonly Block[], translations: readon
       hasFailedTranslation ||= byBlock.get(block.blockId)?.status === 'failed';
       const text = translatedText(block, byBlock);
       hasMissingTranslation ||= text === null;
-      const [lo, hi] = extents.get(column) ?? [0, 1];
-      const centred = box.width < (hi - lo) * 0.7 && Math.abs(box.x + box.width / 2 - (lo + hi) / 2) < 0.03;
-      items.push({ kind: 'text', block, column, text, align: centred ? 'center' : 'start' });
+      const [lo, hi] = proseExtents.get(column) ?? extents.get(column) ?? [0, 1];
+      const lines=block.regions.filter(region=>region.page===page);
+      const centre=(lo+hi)/2;
+      // A single printed title can fill the body width, leaving no inset as evidence.
+      // Its first position, larger type, full-page span and symmetric centre distinguish
+      // that case from the ordinary left-aligned section headings below it.
+      const prominentTitle=column==='full'&&block===pageBlocks[0]&&box.y<.2&&bodySize>0&&block.fontSize>bodySize*1.1
+        &&Math.abs(box.x+box.width/2-centre)<.01;
+      const centred=block.kind==='heading'
+        ? lines.every(line=>Math.abs(line.x+line.width/2-centre)<.025)
+          && (prominentTitle||lines.some(line=>line.x>lo+.01&&line.x+line.width<hi-.01))
+        : box.width < (hi-lo)*.7 && Math.abs(box.x+box.width/2-centre)<.03;
+      items.push({ kind: 'text', block, column, text, promptVersion: byBlock.get(block.blockId)?.promptVersion, align: centred ? 'center' : 'start' });
       continue;
     }
     if (TEXT_KINDS.has(block.kind)) continue; // heading/paragraph/caption with no text: nothing to show
 
+    const [first, ...continued] = partsOf(block);
     const [lo, hi] = extents.get(column) ?? [0, 1];
-    const centred = Math.abs(box.x + box.width / 2 - (lo + hi) / 2) < 0.03;
-    items.push({ kind: 'source', block, column, region: box, align: centred ? 'center' : 'start', inset: centred ? 0 : Math.max(0, box.x - lo) });
+    const centred = Math.abs(first.x + first.width / 2 - (lo + hi) / 2) < 0.03;
+    items.push({ kind: 'source', block, column, region: first, continued, align: centred ? 'center' : 'start', inset: centred ? 0 : Math.max(0, first.x - lo) });
   }
 
   // The page is the unit of publication: until every paragraph on it has its Korean, the whole
@@ -249,7 +313,7 @@ export function groupKoreanSegments(items: readonly KoreanFlowItem[], columnCoun
 }
 
 /** The font size, in pixels, a translated paragraph should render at for the page's current
- * rendered height. Mirrors the block's own font-size ratio (spec: never shrunk), floored so a
+ * rendered height. Mirrors the block's own font-size ratio before page fitting, floored so a
  * near-zero source measurement never collapses to invisible text. */
 export function koreanFontSizePx(block: Block, renderedPageHeight: number): number {
   const ratio = Number.isFinite(block.fontSize) && block.fontSize > 0 ? block.fontSize : MIN_FONT_SIZE_RATIO;

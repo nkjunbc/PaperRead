@@ -178,9 +178,10 @@ export class ChatService {
       }
       const last = stored?.messages.at(-1);
       if (stored === null || last === undefined || last.role !== 'user') continue;
-      const message = this.interruptedAnswer(RESTARTED_ERROR);
+      const pinned = pinnedModel(stored);
+      const message = this.interruptedAnswer(RESTARTED_ERROR, pinned);
       try {
-        this.store.saveConversation(paperKey, { conversationId: stored.conversationId, messages: [...stored.messages, message] });
+        this.store.replaceConversationMessages(paperKey, stored.conversationId, [...stored.messages, message], pinned);
         this.unsaved.delete(paperKey);
       } catch {
         // Shown from memory until the next save of this conversation writes it.
@@ -208,10 +209,10 @@ export class ChatService {
     if (isExcludedModel(request.modelId)) throw appError('MODEL_UNAVAILABLE', '이 모델은 사용하지 않도록 설정되어 있습니다.', false);
     this.requireAskablePaper(paperKey);
     if (this.flights.has(paperKey) || this.admitting.has(paperKey)) throw busy('이전 질문에 아직 답하는 중입니다. 답변이 끝나거나 멈춘 뒤 다시 물어봐 주세요.');
-    this.plan(paperKey, request);
+    const { modelId: pinned } = this.plan(paperKey, request);
     this.admitting.add(paperKey);
     try {
-      await this.assertAccountReady(request.modelId);
+      await this.assertAccountReady(request.modelId, pinned !== null);
     } finally {
       this.admitting.delete(paperKey);
     }
@@ -219,7 +220,7 @@ export class ChatService {
     // Re-read after the wait: the paper may have been deleted or the conversation cleared.
     const { paper, blocks } = this.requireAskablePaper(paperKey);
     if (this.flights.has(paperKey)) throw busy('이전 질문에 아직 답하는 중입니다. 답변이 끝나거나 멈춘 뒤 다시 물어봐 주세요.');
-    const { conversationId, messages } = this.plan(paperKey, request);
+    const { conversationId, messages, fresh } = this.plan(paperKey, request);
     const history = completedExchanges(messages);
     const instructions = paperInstructions(paper, blocks);
     // Re-extraction changes the paper's text under a live conversation. Its thread was opened on
@@ -229,8 +230,12 @@ export class ChatService {
     const stale = previous !== undefined && previous !== digest;
     const createdAt = this.now().toISOString();
     const question: ChatMessage = { messageId: this.newId(), role: 'user', text: request.question, status: 'completed', modelId: null, error: null, usage: null, createdAt };
-    // `messages` came from load(): an answer whose write had failed is written with it now.
-    const saved = this.store.saveConversation(paperKey, { conversationId, messages: [...messages, question] });
+    // A new conversation is stored with the model it keeps from now on. `messages` came from
+    // load(): an answer whose write had failed is written with the question now, and a
+    // conversation stored without its model (an older build) is given the one asked of here.
+    const saved = fresh
+      ? this.store.createConversation(paperKey, conversationId, request.modelId, question)
+      : this.store.replaceConversationMessages(paperKey, conversationId, [...messages, question], request.modelId);
     this.unsaved.delete(paperKey);
     this.freshIds.delete(paperKey);
     this.threadInstructions.set(conversationId, digest);
@@ -379,7 +384,7 @@ export class ChatService {
       if (index < 0) return;
       const messages = [...stored.messages];
       messages[index] = mark(messages[index]!);
-      this.store.saveConversation(paperKey, { conversationId: stored.conversationId, messages });
+      this.store.replaceConversationMessages(paperKey, stored.conversationId, messages, pinnedModel(stored));
     } catch {
       /* the log line above is the record */
     }
@@ -395,7 +400,7 @@ export class ChatService {
     try {
       const stored = this.store.getConversation(paperKey);
       if (stored === null || stored.conversationId !== flight.conversationId) return;
-      this.store.saveConversation(paperKey, { conversationId: stored.conversationId, messages: [...stored.messages, message] });
+      this.store.replaceConversationMessages(paperKey, stored.conversationId, [...stored.messages, message], pinnedModel(stored));
     } catch (cause) {
       this.unsaved.set(paperKey, { conversationId: flight.conversationId, afterMessageId: flight.questionId, message, placeholder: false });
       this.log({ event: 'chat', action: 'answer', paperKey, status: message.status, code: toAppError(cause).code });
@@ -414,7 +419,7 @@ export class ChatService {
         this.unsaved.delete(paperKey);
         return;
       }
-      this.store.saveConversation(paperKey, { conversationId: stored.conversationId, messages: [...stored.messages, unsaved.message] });
+      this.store.replaceConversationMessages(paperKey, stored.conversationId, [...stored.messages, unsaved.message], pinnedModel(stored));
       this.unsaved.delete(paperKey);
     } catch {
       /* kept for the next save */
@@ -449,15 +454,17 @@ export class ChatService {
     });
   }
 
-  private interruptedAnswer(error: AppError): ChatMessage {
-    return { messageId: this.newId(), role: 'assistant', text: '', status: 'failed', modelId: null, error, usage: null, createdAt: this.now().toISOString() };
+  /** An answer lost before it settled. It names the model the conversation keeps, as the
+   * answer did while it was being written. */
+  private interruptedAnswer(error: AppError, modelId: string | null): ChatMessage {
+    return { messageId: this.newId(), role: 'assistant', text: '', status: 'failed', modelId, error, usage: null, createdAt: this.now().toISOString() };
   }
 
   /** The stored conversation, or an empty one with a stable fresh id. Never writes. An answer
    * whose write failed is shown after its question. A question stored without an answer that
    * nothing here is answering or holding is shown as interrupted, so it can be asked again; the
-   * next save writes that. */
-  private load(paperKey: string): ConversationRecord {
+   * next save writes that. `fresh`: nothing is stored, so the next question starts it. */
+  private load(paperKey: string): ConversationRecord & { fresh: boolean } {
     const stored = this.store.getConversation(paperKey);
     if (stored === null) {
       this.unsaved.delete(paperKey);
@@ -466,36 +473,39 @@ export class ChatService {
         id = this.newId();
         this.freshIds.set(paperKey, id);
       }
-      return { conversationId: id, messages: [] };
+      return { conversationId: id, modelId: null, messages: [], fresh: true };
     }
     const last = stored.messages.at(-1);
     if (last === undefined || last.role !== 'user' || this.flights.has(paperKey)) {
       this.unsaved.delete(paperKey);
-      return stored;
+      return { ...stored, fresh: false };
     }
     let unsaved = this.unsaved.get(paperKey);
     if (unsaved === undefined || unsaved.conversationId !== stored.conversationId || unsaved.afterMessageId !== last.messageId) {
       // Kept, so every read shows the same message until a save writes it.
-      unsaved = { conversationId: stored.conversationId, afterMessageId: last.messageId, message: this.interruptedAnswer(INTERRUPTED_ERROR), placeholder: true };
+      unsaved = { conversationId: stored.conversationId, afterMessageId: last.messageId, message: this.interruptedAnswer(INTERRUPTED_ERROR, pinnedModel(stored)), placeholder: true };
       this.unsaved.set(paperKey, unsaved);
     }
-    return { conversationId: stored.conversationId, messages: [...stored.messages, unsaved.message] };
+    return { ...stored, messages: [...stored.messages, unsaved.message], fresh: false };
   }
 
   private view(paperKey: string, record: ConversationRecord): Conversation {
     const flight = this.flights.get(paperKey);
     const answering = flight !== undefined && flight.conversationId === record.conversationId;
-    return {
-      paperKey,
-      conversationId: record.conversationId,
-      messages: answering ? [...record.messages, { ...flight.message }] : record.messages,
-      answering,
-    };
+    const messages = answering ? [...record.messages, { ...flight.message }] : record.messages;
+    return { paperKey, conversationId: record.conversationId, messages, answering, modelId: pinnedModel(record) };
   }
 
-  /** The messages the new question follows (a retried exchange removed) and its conversation id. */
-  private plan(paperKey: string, request: AskInput): ConversationRecord {
+  /** The messages the new question follows (a retried exchange removed), its conversation id and
+   * the model the conversation keeps. A question for another model is refused, never re-routed:
+   * another model means a new conversation. */
+  private plan(paperKey: string, request: AskInput): ConversationRecord & { fresh: boolean } {
     const record = this.load(paperKey);
+    // Read before a retry drops the failed first answer: in a conversation stored without its
+    // model, that answer still names it.
+    const pinned = pinnedModel(record);
+    if (pinned !== null && isExcludedModel(pinned)) throw appError('MODEL_UNAVAILABLE', '이 대화의 모델은 사용하지 않도록 설정되어 있습니다. 새 대화를 시작해 주세요.', false);
+    if (pinned !== null && pinned !== request.modelId) throw invalidInput(`이 대화는 ${pinned} 모델로 이어 갑니다. 다른 모델로 물어보려면 새 대화를 시작해 주세요.`);
     const messages = [...record.messages];
     if (request.retry) {
       const last = messages.at(-1);
@@ -506,7 +516,7 @@ export class ChatService {
       if (messages.at(-1)?.role === 'user') messages.pop();
     }
     if (messages.length + 2 > MAX_CHAT_MESSAGES) throw invalidInput('대화가 길어져 더 이어 갈 수 없습니다. 새 대화를 시작해 주세요.');
-    return { conversationId: record.conversationId, messages };
+    return { conversationId: record.conversationId, modelId: pinned, messages, fresh: record.fresh };
   }
 
   private requirePaper(paperKey: string): Paper {
@@ -523,7 +533,7 @@ export class ChatService {
   }
 
   /** The same account gate translation uses, with the question path's wording. */
-  private async assertAccountReady(modelId: string): Promise<void> {
+  private async assertAccountReady(modelId: string, pinned: boolean): Promise<void> {
     let connection: Connection;
     try {
       connection = await this.connection();
@@ -543,9 +553,17 @@ export class ChatService {
         throw appError('NETWORK', 'Codex 연결을 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.', true);
     }
     if (!connection.modelIds.includes(modelId)) {
-      throw appError('MODEL_UNAVAILABLE', '선택한 모델을 지금 사용할 수 없습니다. 다른 모델을 선택해 주세요.', false);
+      throw appError('MODEL_UNAVAILABLE', pinned ? '이 대화의 모델을 지금 사용할 수 없습니다. 새 대화를 시작해 다른 모델로 물어봐 주세요.' : '선택한 모델을 지금 사용할 수 없습니다. 다른 모델을 선택해 주세요.', false);
     }
   }
+}
+
+/** The model a conversation keeps: the one stored with its first question, whatever became of
+ * that question's answer. A conversation stored without one (an older build wrote or rewrote it)
+ * keeps the model its first answer naming one was asked of; with none, its next question's
+ * model is stored with it. */
+function pinnedModel(record: ConversationRecord): string | null {
+  return record.modelId ?? record.messages.find((message) => message.role === 'assistant' && message.modelId !== null)?.modelId ?? null;
 }
 
 /** Question and answer pairs whose answer completed, oldest first. A failed or stopped answer
