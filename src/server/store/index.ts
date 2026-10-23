@@ -12,9 +12,11 @@ import {
   validateHighlight,
   validateJob,
   validatePaper,
+  validateReextractionRecord,
   validateRestartTranslationRequest,
   validateTranslation,
   type ConversationRecord,
+  type ReextractionRecord,
 } from './validate';
 import {
   completeTranslationReset,
@@ -27,7 +29,7 @@ import {
 
 export { AppErrorException, appError, busy, invalidInput, notFound, storageError } from './errors';
 export type { Envelope } from './atomic';
-export type { ConversationRecord } from './validate';
+export type { ConversationRecord, ReextractionRecord } from './validate';
 
 const PAPER_FILE = 'paper.json';
 const BLOCKS_FILE = 'blocks.json';
@@ -38,6 +40,7 @@ const PDF_MARKER = 'pdf.committed';
 const JOBS_INDEX = 'jobs-index.json';
 const HIGHLIGHTS_FILE = 'highlights.json';
 const CHAT_FILE = 'chat.json';
+const REEXTRACTION_FILE = 'reextraction.json';
 
 /** Result of a local delete. `scope` is always 'local' — the app never deletes remote/arXiv data. */
 export interface DeleteReport {
@@ -68,6 +71,7 @@ function translationId(t: Pick<Translation, 'blockId' | 'sourceHash' | 'modelId'
  *   <root>/<paperKey>/job.json           checksummed Job
  *   <root>/<paperKey>/original.pdf       source PDF bytes
  *   <root>/<paperKey>/chat.json          checksummed question conversation
+ *   <root>/<paperKey>/reextraction.json  checksummed prior generation of an unfinished re-extraction
  *   <root>/jobs-index.json               jobId -> paperKey lookup
  *
  * Every write goes through a temp-file + fsync + rename commit and every record
@@ -260,16 +264,28 @@ export class PaperStore {
     return validated;
   }
 
+  /** The committed list a paper keeps in `file`: none when it has no such file, null when the file
+   * is there but cannot be read or does not validate (torn, corrupt, from an unknown format). */
+  private storedList<T>(paperKey: string, file: string, validate: (item: unknown) => T): T[] | null {
+    assertSafeKey(paperKey);
+    const path = join(this.root, paperKey, file);
+    const record = readRecord<unknown>(path);
+    if (record === null) return existsSync(path) ? null : [];
+    if (!Array.isArray(record)) return null;
+    try {
+      return record.map(validate);
+    } catch {
+      return null;
+    }
+  }
+
+  private storedBlocks(paperKey: string): Block[] | null {
+    return this.storedList(paperKey, BLOCKS_FILE, (b) => validateBlock(b, paperKey))?.sort((a, b) => a.order - b.order) ?? null;
+  }
+
   /** Read the committed block list, ordered. Returns [] when absent or torn. */
   listBlocks(paperKey: string): Block[] {
-    assertSafeKey(paperKey);
-    const record = readRecord<Block[]>(join(this.root, paperKey, BLOCKS_FILE));
-    if (record === null || !Array.isArray(record)) return [];
-    try {
-      return record.map((b) => validateBlock(b, paperKey)).sort((a, b) => a.order - b.order);
-    } catch {
-      return [];
-    }
+    return this.storedBlocks(paperKey) ?? [];
   }
 
   /** Look up a single block by id. */
@@ -316,13 +332,7 @@ export class PaperStore {
   }
 
   private listTranslationsRaw(paperKey: string): Translation[] {
-    const record = readRecord<Translation[]>(join(this.root, paperKey, TRANSLATIONS_FILE));
-    if (record === null || !Array.isArray(record)) return [];
-    try {
-      return record.map((t) => validateTranslation(t));
-    } catch {
-      return [];
-    }
+    return this.storedList(paperKey, TRANSLATIONS_FILE, validateTranslation) ?? [];
   }
 
   /** Read all committed translations for a paper. */
@@ -470,6 +480,10 @@ export class PaperStore {
   /**
    * Recover all durable reset intents left by a crash or a failed storage
    * operation. Existing paper metadata/PDF/blocks/highlights are untouched.
+   * A finished reset's receipt whose job file is gone is retired: a finished
+   * reset always published its job, so only a deletion that stopped part way,
+   * or a cleanup that removed the job before the receipt, leaves one, and it
+   * would stop every read of the job.
    */
   recoverRestarts(): void {
     if (!existsSync(this.root)) return;
@@ -490,7 +504,17 @@ export class PaperStore {
       }
       if (!isDir) continue;
       const reset = readTranslationReset(resetJournalPath(dir));
-      if (reset === null || reset.phase === 'complete') continue;
+      if (reset === null) continue;
+      if (reset.phase === 'complete') {
+        if (reset.paperKey === entry && !existsSync(join(dir, JOB_FILE))) {
+          try {
+            rmSync(resetJournalPath(dir), { force: true });
+          } catch (cause) {
+            throw storageError(`failed to retire the translation reset receipt for ${entry}`, cause);
+          }
+        }
+        continue;
+      }
       if (reset.paperKey !== entry) {
         throw storageError(`translation reset journal paperKey mismatch for ${entry}`);
       }
@@ -585,20 +609,78 @@ export class PaperStore {
 
   /**
    * Remove work derived from a prior block identity while retaining the
-   * revision metadata and its committed PDF for re-extraction.
+   * revision metadata and its committed PDF for re-extraction. The reset receipt
+   * goes before the job: left without it, the receipt stops every read of the job.
    */
   clearDerivedWork(paperKey: string): void {
     assertSafeKey(paperKey);
     this.assertTranslationReadable(paperKey);
     const dir = this.paperDir(paperKey);
     try {
+      rmSync(resetJournalPath(dir), { force: true });
       rmSync(join(dir, TRANSLATIONS_FILE), { force: true });
       rmSync(join(dir, JOB_FILE), { force: true });
-      rmSync(resetJournalPath(dir), { force: true });
     } catch (cause) {
       throw storageError(`failed to clear derived work for ${paperKey}`, cause);
     }
     if (existsSync(this.root)) this.removeFromJobsIndex(paperKey);
+  }
+
+  /**
+   * The prior generation of a re-extraction that has not finished, or null. A file that cannot be
+   * read or does not validate is a retryable STORAGE error and stays as it is. Taken for no record,
+   * it would let the next open delete the work only it still holds.
+   */
+  pendingReextraction(paperKey: string): ReextractionRecord | null {
+    assertSafeKey(paperKey);
+    const file = join(this.root, paperKey, REEXTRACTION_FILE);
+    const record = readRecord<unknown>(file);
+    const unreadable = () => appError('STORAGE', '이전 추출의 번역을 옮길 기록을 읽지 못해 논문을 열지 않았습니다. 기록 파일은 지우지 않고 그대로 두었습니다.', true);
+    if (record === null) {
+      if (existsSync(file)) throw unreadable();
+      return null;
+    }
+    try {
+      return validateReextractionRecord(record, paperKey);
+    } catch {
+      throw unreadable();
+    }
+  }
+
+  /**
+   * Commit the generation a re-extraction replaces, with its blocks, completed translations, job
+   * model and Korean-surface highlights, before its derived work is deleted. Nothing may be
+   * deleted unless this write succeeds. A record left by an attempt that did not finish is kept,
+   * because the files now hold that attempt's partial work instead of the prior generation.
+   * A list there that cannot be read stops it: recorded as none, its translations would be
+   * deleted and its notes never moved.
+   */
+  beginReextraction(paperKey: string): ReextractionRecord {
+    const pending = this.pendingReextraction(paperKey);
+    if (pending !== null) return pending;
+    const blocks = this.storedBlocks(paperKey);
+    this.assertTranslationReadable(paperKey);
+    const translations = this.storedList(paperKey, TRANSLATIONS_FILE, validateTranslation);
+    if (blocks === null || translations === null) {
+      throw appError('STORAGE', '저장된 문단과 번역을 읽지 못해 논문을 열지 않았습니다. 파일은 지우지 않고 그대로 두었습니다.', true);
+    }
+    const record: ReextractionRecord = {
+      blocks,
+      translations: translations.filter((t) => t.status === 'completed'),
+      modelId: this.getJobForPaper(paperKey)?.modelId ?? null,
+      highlights: this.readHighlights(paperKey).filter((h) => h.surface === 'translation'),
+    };
+    writeRecord(join(this.paperDir(paperKey), REEXTRACTION_FILE), record);
+    return record;
+  }
+
+  /** The re-extraction has written everything it carried onto the new blocks. */
+  finishReextraction(paperKey: string): void {
+    try {
+      rmSync(join(this.paperDir(paperKey), REEXTRACTION_FILE), { force: true });
+    } catch (cause) {
+      throw storageError(`failed to remove the re-extraction record for ${paperKey}`, cause);
+    }
   }
 
   // --------------------------------------------------------- highlights
@@ -635,19 +717,8 @@ export class PaperStore {
     return validated;
   }
 
-  /** The committed highlights of a paper: none when it has no file, null when a file is there
-   * but cannot be read or does not validate (torn, corrupt, from an unknown format). */
   private storedHighlights(paperKey: string): Highlight[] | null {
-    assertSafeKey(paperKey);
-    const file = join(this.root, paperKey, HIGHLIGHTS_FILE);
-    const record = readRecord<Highlight[]>(file);
-    if (record === null) return existsSync(file) ? null : [];
-    if (!Array.isArray(record)) return null;
-    try {
-      return record.map((h) => validateHighlight(h, paperKey));
-    } catch {
-      return null;
-    }
+    return this.storedList(paperKey, HIGHLIGHTS_FILE, (h) => validateHighlight(h, paperKey));
   }
 
   /**

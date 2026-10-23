@@ -228,6 +228,33 @@ export function validateTranslation(translation: unknown): Translation {
   };
 }
 
+/** The generation a re-extraction replaces, kept on disk from before its derived work is deleted
+ * until the re-extraction has carried it onto the new blocks. */
+export interface ReextractionRecord {
+  /** The blocks the translations and the Korean notes were made on. */
+  blocks: Block[];
+  /** Completed translations only. */
+  translations: Translation[];
+  /** The model of the job the revision had; null when it had none. */
+  modelId: string | null;
+  /** The Korean-surface highlights, memos and ink as they were. Notes are moved from these and
+   * never from the live file, which a retry may find already moved onto ids the old blocks share. */
+  highlights: Highlight[];
+}
+
+/** Validate a re-extraction record when it is read back. */
+export function validateReextractionRecord(record: unknown, paperKey: string): ReextractionRecord {
+  if (!record || typeof record !== 'object') throw invalidInput('re-extraction record must be an object');
+  const r = record as ReextractionRecord;
+  if (!Array.isArray(r.blocks) || !Array.isArray(r.translations) || !Array.isArray(r.highlights)) throw invalidInput('re-extraction record needs blocks, translations and highlights');
+  if (r.modelId !== null && !isNonEmptyString(r.modelId)) throw invalidInput('re-extraction record modelId must be a non-empty string or null');
+  const translations = r.translations.map((t) => validateTranslation(t));
+  if (translations.some((t) => t.status !== 'completed')) throw invalidInput('re-extraction record holds completed translations only');
+  const highlights = r.highlights.map((h) => validateHighlight(h, paperKey));
+  if (highlights.some((h) => h.surface !== 'translation')) throw invalidInput('re-extraction record holds Korean-surface highlights only');
+  return { blocks: r.blocks.map((b) => validateBlock(b, paperKey)), translations, modelId: r.modelId, highlights };
+}
+
 function validateUsage(usage: unknown): Usage {
   if (!usage || typeof usage !== 'object') throw invalidInput('usage must be an object');
   const u = usage as Usage;
