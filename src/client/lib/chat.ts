@@ -203,19 +203,19 @@ export function needsAccount(error: AppError | null): boolean {
  * The model a question goes to. A conversation keeps the model of its first question, as the
  * service reports it (`pinned`), even one no longer offered: the service then refuses it and the
  * reader starts a new conversation; it is never swapped here. A new conversation goes to the
- * reader's pick in this panel, else the toolbar's (the app-wide default), else the first offered.
+ * app-wide default, the one model a pick in the toolbar, this panel or the account menu last
+ * saved, else the first offered.
  */
-export function effectiveModel(chosen: string, fallback: string, modelIds: readonly string[], pinned: string | null): string {
+export function effectiveModel(preferred: string, modelIds: readonly string[], pinned: string | null): string {
   if (pinned !== null) return pinned;
-  if (chosen !== '' && modelIds.includes(chosen)) return chosen;
-  if (fallback !== '' && modelIds.includes(fallback)) return fallback;
+  if (preferred !== '' && modelIds.includes(preferred)) return preferred;
   return modelIds[0] ?? '';
 }
 
-/** Said under the model choice once the reader picked another model during a conversation that
- * keeps its own: the pick, saved as the app-wide default, waits for the next new conversation. */
-export function pinnedModelNotice(pinned: string | null, chosen: string): string | null {
-  return pinned !== null && chosen !== '' && chosen !== pinned ? '선택한 모델은 다음 새 대화부터 적용됩니다.' : null;
+/** Said under the model choice while a conversation keeps another model than the app-wide
+ * default: that default, picked since, waits for the next new conversation. */
+export function pinnedModelNotice(pinned: string | null, preferred: string): string | null {
+  return pinned !== null && preferred !== '' && preferred !== pinned ? '선택한 모델은 다음 새 대화부터 적용됩니다.' : null;
 }
 
 export function lastAssistant(conversation: Conversation | null): ChatMessage | null {

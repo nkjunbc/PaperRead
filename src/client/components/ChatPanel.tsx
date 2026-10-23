@@ -532,7 +532,6 @@ export function ChatPanel({ client, paperKey, paper, connection, canMutate, pref
   const [failedDraft, setFailedDraft] = useState<string | null>(null);
   const draftRef = useRef('');
   draftRef.current = draft;
-  const [chosenModel, setChosenModel] = useState('');
   const [sending, setSending] = useState<PendingQuestion | null>(null);
   const [stopping, setStopping] = useState(false);
   const [askError, setAskError] = useState<AppError | null>(null);
@@ -564,7 +563,7 @@ export function ChatPanel({ client, paperKey, paper, connection, canMutate, pref
 
   const modelIds = connection?.modelIds ?? [];
   const pinnedModel = conversation?.modelId ?? null;
-  const modelId = effectiveModel(chosenModel, preferredModelId, modelIds, pinnedModel);
+  const modelId = effectiveModel(preferredModelId, modelIds, pinnedModel);
   const blocked = chatBlockedReason({ canMutate, connection, paper });
   const answering = conversation?.answering === true;
 
@@ -867,8 +866,6 @@ export function ChatPanel({ client, paperKey, paper, connection, canMutate, pref
     try {
       const { conversation: next } = await client.clearConversation(paperKey);
       setConversation(next);
-      // The new conversation starts on the app-wide default.
-      setChosenModel('');
       setAskError(null);
       stick.current = true;
     } catch (cause) {
@@ -917,12 +914,9 @@ export function ChatPanel({ client, paperKey, paper, connection, canMutate, pref
       confirmingClear={confirmingClear}
       pinned={pinned}
       announcement={announcement}
-      modelNotice={pinnedModelNotice(pinnedModel, chosenModel) ?? preferredModelFallback(connection)}
+      modelNotice={pinnedModelNotice(pinnedModel, preferredModelId) ?? preferredModelFallback(connection)}
       quoteNotice={quoteNote}
-      onModelChange={(id) => {
-        setChosenModel(id);
-        onModelChange(id);
-      }}
+      onModelChange={onModelChange}
       onDraftChange={(value) => {
         setDraft(value);
         if (value.trim().length === 0) setQuoteNote(null);

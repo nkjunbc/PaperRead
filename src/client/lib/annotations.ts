@@ -285,10 +285,28 @@ export function strokeLayouts(drawn: ReadonlyMap<number, string>, lastDrawn: Rea
   return layouts;
 }
 
+/** Whether a Korean record of a page that shows the original can no longer be drawn where it
+ * was made once the page has its Korean again, judged by the stored blocks and translations: a
+ * highlight or memo whose paragraph is gone or whose Korean at its place reads otherwise, a
+ * stroke whose page's paragraphs or Korean are not those it was drawn on. A paragraph still
+ * waiting for its Korean tells nothing yet. */
+function lostWhileWaiting(record: Highlight, translations: Translation[], blocks: Block[], modelId: string | null): boolean {
+  if (record.kind === 'ink') return annotationUnavailable(record, translations, blocks, undefined, modelId);
+  const shown = selectTranslations(blocks, translations, modelId);
+  return record.anchors?.every((anchor) => {
+    const block = blocks.find((one) => one.blockId === anchor.blockId);
+    if (block === undefined) return false;
+    const pending = shown.get(anchor.blockId)?.status !== 'completed' && !(block.kind === 'equation' && !block.translatable);
+    return pending || resolveTranslationAnchor(shown.get(anchor.blockId), block, anchor) !== null;
+  }) !== true;
+}
+
 /** The memo list of a paper. Every record is judged, not only those of the pages drawn now:
  * `layouts` holds the layouts Korean pages' pen strokes are judged by (`strokeLayouts`), and
- * every other page is judged by its stored blocks and translations. `modelId` is the job's model
- * (null without a job): the Korean page shows that model's translation. */
+ * every other page is judged by its stored blocks and translations. A Korean page that shows the
+ * original is drawn as the original, so its records are judged by what is stored alone, and
+ * those not lost wait for the page's Korean. `modelId` is the job's model (null without a job):
+ * the Korean page shows that model's translation. */
 export function memoList(highlights: readonly Highlight[], translations: Translation[], blocks: Block[], layouts: ReadonlyMap<number, string>, modelId: string | null): MemoList {
   const showsOriginal = new Map<number, boolean>();
   const waiting = (page: number): boolean => {
@@ -299,7 +317,7 @@ export function memoList(highlights: readonly Highlight[], translations: Transla
   const lost: MemoListEntry[] = [];
   for (const record of highlights) {
     const place: AnnotationPlace = annotationSurface(record) !== 'translation' ? 'placed'
-      : waiting(record.page) ? 'waiting'
+      : waiting(record.page) ? (lostWhileWaiting(record, translations, blocks, modelId) ? 'lost' : 'waiting')
         : annotationUnavailable(record, translations, blocks, layouts.get(record.page), modelId) ? 'lost' : 'placed';
     if (place === 'lost') lost.push({ record, place });
     else if (record.kind !== 'ink') entries.push({ record, place });
