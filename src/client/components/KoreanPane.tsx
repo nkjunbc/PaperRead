@@ -38,8 +38,10 @@ import type { EraserSize } from '../lib/eraser';
  * page would be drawn — and measured and reported — at its old size, and every pane position
  * worked out for the new zoom in that commit (App keeps the reader's place across a zoom change)
  * would be off by the difference. */
-function useSourcePageImage(doc: PDFDocumentProxy, page: number, zoom: number, dpr: number): { url: string; size: Size } | null {
-  const [state, setState] = useState<{ url: string; size: Size; doc: PDFDocumentProxy; page: number; zoom: number; dpr: number } | null>(null);
+type SourcePageImage = { status: 'ready'; url: string; size: Size } | { status: 'failed' };
+
+function useSourcePageImage(doc: PDFDocumentProxy, page: number, zoom: number, dpr: number): SourcePageImage | null {
+  const [state, setState] = useState<{ image: SourcePageImage; doc: PDFDocumentProxy; page: number; zoom: number; dpr: number } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -58,14 +60,12 @@ function useSourcePageImage(doc: PDFDocumentProxy, page: number, zoom: number, d
       if (context === null) return;
       const render = proxy.render({ canvas, canvasContext: context, viewport: proxy.getViewport({ scale: zoom * dpr }) });
       task = render;
-      try {
-        await render.promise;
-      } catch {
-        return; // superseded by a newer zoom, or unmounted
-      }
+      await render.promise;
       if (cancelled) return;
-      setState({ url: canvas.toDataURL(), size: rendered, doc, page, zoom, dpr });
-    })();
+      setState({ image: { status: 'ready', url: canvas.toDataURL(), size: rendered }, doc, page, zoom, dpr });
+    })().catch(() => {
+      if (!cancelled) setState({ image: { status: 'failed' }, doc, page, zoom, dpr });
+    });
 
     return () => {
       cancelled = true;
@@ -73,7 +73,7 @@ function useSourcePageImage(doc: PDFDocumentProxy, page: number, zoom: number, d
     };
   }, [doc, page, zoom, dpr]);
 
-  return state !== null && state.doc === doc && state.page === page && state.zoom === zoom && state.dpr === dpr ? state : null;
+  return state !== null && state.doc === doc && state.page === page && state.zoom === zoom && state.dpr === dpr ? state.image : null;
 }
 
 const FONT_STACK: Record<Block['fontFamily'], string> = {
@@ -90,7 +90,7 @@ interface TextFlowProps extends InlineSourceProps {
   image: {url:string;size:Size};
   item: Extract<KoreanFlowItem, { kind: 'text' }>;
   renderedPageHeight: number;
-  onSelectBlock(block: Block, via: SelectVia): void;
+  onSelectPage(page: number, via: SelectVia): void;
 }
 
 /** True when the reader has text selected inside `node` — a drag to quote, not a click. */
@@ -101,7 +101,7 @@ function selectingIn(node: Node): boolean {
 }
 
 /** One translated paragraph/heading/caption. */
-function TextFlow({ item, renderedPageHeight, onSelectBlock, image, imagePage, doc, zoom, dpr }: TextFlowProps): JSX.Element {
+function TextFlow({ item, renderedPageHeight, onSelectPage, image, imagePage, doc, zoom, dpr }: TextFlowProps): JSX.Element {
   const size = koreanFontSizePx(item.block, renderedPageHeight);
   const style = {
     fontFamily: FONT_STACK[item.block.fontFamily],
@@ -121,12 +121,12 @@ function TextFlow({ item, renderedPageHeight, onSelectBlock, image, imagePage, d
         // Selecting words to quote them ends in a click on the same paragraph; that is not a jump.
         // Nor are the second and third clicks of a double- or triple-click, which select.
         if (event.detail > 1 || selectingIn(event.currentTarget)) return;
-        onSelectBlock(item.block, 'text');
+        onSelectPage(imagePage, 'text');
       }}
       onKeyDown={(event) => {
         if (event.key !== 'Enter' && event.key !== ' ') return;
         event.preventDefault();
-        onSelectBlock(item.block, 'control');
+        onSelectPage(imagePage, 'control');
       }}
     >
       <TranslatedInline text={item.text??''} promptVersion={item.promptVersion??''} block={item.block} image={image} imagePage={imagePage} doc={doc} zoom={zoom} dpr={dpr}/>
@@ -189,9 +189,9 @@ export function SourceCrop({ item, image, doc, zoom, dpr }: SourceCropProps): JS
   return <div className={`kr-source kr-${item.block.kind}`} style={style} data-block-id={item.block.blockId} aria-label={`${item.block.kind} 원문`} />;
 }
 
-function FlowItemView({ item, renderedPageHeight, image, onSelectBlock, imagePage, doc, zoom, dpr }: InlineSourceProps & { item: KoreanFlowItem; renderedPageHeight: number; image: { url: string; size: Size } | null; onSelectBlock(block: Block, via: SelectVia): void }): JSX.Element | null {
+function FlowItemView({ item, renderedPageHeight, image, onSelectPage, imagePage, doc, zoom, dpr }: InlineSourceProps & { item: KoreanFlowItem; renderedPageHeight: number; image: { url: string; size: Size } | null; onSelectPage(page: number, via: SelectVia): void }): JSX.Element | null {
   if (image === null) return null;
-  if (item.kind === 'text') return <TextFlow item={item} renderedPageHeight={renderedPageHeight} onSelectBlock={onSelectBlock} image={image} imagePage={imagePage} doc={doc} zoom={zoom} dpr={dpr}/>;
+  if (item.kind === 'text') return <TextFlow item={item} renderedPageHeight={renderedPageHeight} onSelectPage={onSelectPage} image={image} imagePage={imagePage} doc={doc} zoom={zoom} dpr={dpr}/>;
   return <SourceCrop item={item} image={image} doc={doc} zoom={zoom} dpr={dpr} />;
 }
 
@@ -207,7 +207,7 @@ interface KoreanPageViewProps {
   /** The box the page held as a placeholder, kept until it is drawn so nothing below it moves. */
   placeholder: Size;
   onHeight(page: number, heightPx: number): void;
-  onSelectBlock(block: Block, via: SelectVia): void;
+  onSelectPage(page: number, via: SelectVia): void;
   highlights?:Highlight[];
   drafts?:AnnotationInput[];
   annotationMode?:AnnotationMode;
@@ -229,7 +229,7 @@ interface KoreanPageViewProps {
  * rendered height after layout and reports it upward for the next stage's page-boundary math.
  */
 function KoreanPageView(props: KoreanPageViewProps): JSX.Element {
-  const { doc, page, zoom, dpr, blocks, translations, modelId, placeholder, onHeight, onSelectBlock } = props;
+  const { doc, page, zoom, dpr, blocks, translations, modelId, placeholder, onHeight, onSelectPage } = props;
   const image = useSourcePageImage(doc, page, zoom, dpr);
   const layout = useMemo(() => buildKoreanLayout(blocks, translations, page, modelId), [blocks, translations, page, modelId]);
   const segments = useMemo(() => groupKoreanSegments(layout.items, layout.columnCount), [layout]);
@@ -239,7 +239,7 @@ function KoreanPageView(props: KoreanPageViewProps): JSX.Element {
 
   useLayoutEffect(() => {
     const node = containerRef.current;
-    if (node === null || image === null) return;
+    if (node === null || image === null || image.status === 'failed') return;
     let active=true;
     const apply=(fit:KoreanPageFit)=>{
       node.style.setProperty('--kr-font-scale',String(fit.fontScale));
@@ -273,10 +273,10 @@ function KoreanPageView(props: KoreanPageViewProps): JSX.Element {
     return()=>{active=false;document.fonts?.removeEventListener('loadingdone',measure);document.fonts?.removeEventListener('loadingerror',measure);};
   },[image,layout,onHeight,page]);
 
-  if (image === null) {
+  if (image === null || image.status === 'failed') {
     return (
       <div className="kr-page kr-placeholder" data-page={page} ref={containerRef} style={{ width: placeholder.width, height: placeholder.height }}>
-        {page}쪽
+        {image?.status === 'failed' ? <p role="alert">{page}쪽 원문 이미지를 불러오지 못했습니다.</p> : `${page}쪽`}
       </div>
     );
   }
@@ -297,7 +297,7 @@ function KoreanPageView(props: KoreanPageViewProps): JSX.Element {
             className="source-block-target"
             aria-label={`${page}쪽 ${block.kind}`}
             style={{ left: `${region.x * 100}%`, top: `${region.y * 100}%`, width: `${region.width * 100}%`, height: `${region.height * 100}%` }}
-            onClick={() => onSelectBlock(block, 'control')}
+            onClick={() => onSelectPage(page, 'control')}
           />
         ))}
         {annotations}
@@ -315,19 +315,19 @@ function KoreanPageView(props: KoreanPageViewProps): JSX.Element {
       {segments.map((segment, index) =>
         segment.type === 'full' ? (
           <div className="kr-row kr-row-full" key={index}>
-            <FlowItemView item={segment.item} renderedPageHeight={renderedPageHeight} image={image} onSelectBlock={onSelectBlock} imagePage={page} doc={doc} zoom={zoom} dpr={dpr} />
+            <FlowItemView item={segment.item} renderedPageHeight={renderedPageHeight} image={image} onSelectPage={onSelectPage} imagePage={page} doc={doc} zoom={zoom} dpr={dpr} />
           </div>
         ) : (
           <div className="kr-row kr-row-columns" key={index}>
             <div className="kr-column">
               {segment.left.map((item) => (
-                <FlowItemView key={item.block.blockId} item={item} renderedPageHeight={renderedPageHeight} image={image} onSelectBlock={onSelectBlock} imagePage={page} doc={doc} zoom={zoom} dpr={dpr} />
+                <FlowItemView key={item.block.blockId} item={item} renderedPageHeight={renderedPageHeight} image={image} onSelectPage={onSelectPage} imagePage={page} doc={doc} zoom={zoom} dpr={dpr} />
               ))}
             </div>
             {segment.right.length > 0 ? (
               <div className="kr-column">
                 {segment.right.map((item) => (
-                  <FlowItemView key={item.block.blockId} item={item} renderedPageHeight={renderedPageHeight} image={image} onSelectBlock={onSelectBlock} imagePage={page} doc={doc} zoom={zoom} dpr={dpr} />
+                  <FlowItemView key={item.block.blockId} item={item} renderedPageHeight={renderedPageHeight} image={image} onSelectPage={onSelectPage} imagePage={page} doc={doc} zoom={zoom} dpr={dpr} />
                 ))}
               </div>
             ) : null}
@@ -359,7 +359,7 @@ export interface KoreanPaneProps {
   onScroll(): void;
   /** Called just before the pane shifts its own scroll position to keep the reader's place. */
   onAdjustScroll?(): void;
-  onSelectBlock(block: Block, via: SelectVia): void;
+  onSelectPage(page: number, via: SelectVia): void;
   highlights?:Highlight[];
   /** Records not saved yet: highlighter sweeps waiting for the service, a new memo's selection. */
   drafts?:AnnotationInput[];
@@ -402,7 +402,7 @@ function selectionInputs(body: HTMLElement, selection: Selection | null): Annota
  * record per page it covers. A click that selects nothing on a highlight opens its memo card.
  */
 export function KoreanPages(props: KoreanPaneProps): JSX.Element {
-  const { doc, pageCount, currentPage, zoom, blocks, translations, pageHeights, pageIntrinsicSize, onPageHeight, bodyRef, onScroll, onAdjustScroll, onSelectBlock } = props;
+  const { doc, pageCount, currentPage, zoom, blocks, translations, pageHeights, pageIntrinsicSize, onPageHeight, bodyRef, onScroll, onAdjustScroll, onSelectPage } = props;
   const dpr = useMemo(() => Math.min(2, typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1), []);
   const live = useMemo(() => new Set(visiblePageWindow(currentPage, pageCount, 1)), [currentPage, pageCount]);
   const [, setHeightVersion] = useState(0);
@@ -548,7 +548,7 @@ export function KoreanPages(props: KoreanPaneProps): JSX.Element {
               modelId={props.modelId}
               placeholder={placeholderSize(page)}
               onHeight={reportHeight}
-              onSelectBlock={onSelectBlock}
+              onSelectPage={onSelectPage}
               highlights={props.highlights}
               drafts={props.drafts}
               annotationMode={props.annotationMode}

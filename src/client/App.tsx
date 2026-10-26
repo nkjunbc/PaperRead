@@ -19,7 +19,7 @@ import { ReaderToolbar, type ReplacementRequest } from './components/ReaderToolb
 import { choosePane, RecordReveal, type MemoListTarget } from './lib/annotations';
 import { ApiClient, extractError, readToken } from './lib/api';
 import { keepsKeysToItself } from './lib/find';
-import { blockPage, type Size } from './lib/geometry';
+import type { Size } from './lib/geometry';
 import { koreanPageFallbackHeight, koreanPageHeight } from './lib/korean-page';
 import { intrinsicSize, loadPdf, type PDFDocumentProxy } from './lib/pdf';
 import { connectionShortLabel, connectionTone, paperStatusLabel, pickDefaultModel, preferredModelFallback, saveModelChoice, translationBlockedReason } from './lib/status';
@@ -309,19 +309,30 @@ export function App(): JSX.Element {
   }, [paper?.status, loadLibrary]);
 
   // Load the PDF once the revision's bytes exist.
+  const pdfPaperKey = paper !== null && isReadable(paper.status) ? paperKey : null;
   useEffect(() => {
-    if (paperKey === null || paper === null || !isReadable(paper.status)) return;
+    setDoc(null);
+    if (pdfPaperKey === null) return;
     const controller = new AbortController();
-    void loadPdf(client.pdfUrl(paperKey), controller.signal)
+    let ownedDoc: PDFDocumentProxy | null = null;
+    void loadPdf(client.pdfUrl(pdfPaperKey), controller.signal)
       .then((loaded) => {
+        if (controller.signal.aborted || paperKeyRef.current !== pdfPaperKey) {
+          void loaded.loadingTask.destroy().catch(fail);
+          return;
+        }
+        ownedDoc = loaded;
         setDoc(loaded);
         setPageCount(loaded.numPages);
       })
-      .catch(() => {
-        /* the bytes may still be arriving; the poll will retry */
+      .catch((cause) => {
+        if (!controller.signal.aborted) fail(cause);
       });
-    return () => controller.abort();
-  }, [paperKey, paper?.status]);
+    return () => {
+      controller.abort();
+      if (ownedDoc !== null) void ownedDoc.loadingTask.destroy().catch(fail);
+    };
+  }, [pdfPaperKey, fail]);
 
   // Read every page's native dimensions without rasterising it. Virtual Korean pages use
   // these same dimensions as measured pages and boundary calculations.
@@ -337,11 +348,13 @@ export function App(): JSX.Element {
       if (cancelled) return;
       for (const [page, size] of sizes) intrinsic.current.set(page, size);
       setIntrinsicVersion((version) => version + 1);
+    }).catch((cause) => {
+      if (!cancelled) fail(cause);
     });
     return () => {
       cancelled = true;
     };
-  }, [doc]);
+  }, [doc, fail]);
 
   // ------------------------------------------------------------ enter/leave
 
@@ -934,10 +947,8 @@ export function App(): JSX.Element {
     fitWidth();
   }, [doc, intrinsicVersion, fitWidth]);
 
-  const selectKoreanBlock = useCallback(
-    (block: Block, via: SelectVia) => {
-      const page = blockPage(block);
-      if (page === null) return;
+  const selectKoreanPage = useCallback(
+    (page: number, via: SelectVia) => {
       window.clearTimeout(koreanJump.current);
       const jump = () => {
         aligned.current = false;
@@ -966,10 +977,8 @@ export function App(): JSX.Element {
   );
   useEffect(() => () => window.clearTimeout(koreanJump.current), []);
 
-  const selectSourceBlock = useCallback(
-    (block: Block) => {
-      const page = blockPage(block);
-      if (page === null) return;
+  const selectSourcePage = useCallback(
+    (page: number) => {
       aligned.current = false;
       setCurrentPage(page);
       setNarrowPane('translation');
@@ -1440,7 +1449,7 @@ export function App(): JSX.Element {
                   registerPage={registerPage}
                   bodyRef={pdfBody}
                   onScroll={onPdfScroll}
-                  onSelectBlock={selectSourceBlock}
+                  onSelectPage={selectSourcePage}
                   onAsk={askAboutSource}
                 />
               </section>
@@ -1494,7 +1503,7 @@ export function App(): JSX.Element {
                   bodyRef={textBody}
                   onScroll={onTextScroll}
                   onAdjustScroll={onKoreanAdjustScroll}
-                  onSelectBlock={selectKoreanBlock}
+                  onSelectPage={selectKoreanPage}
                   {...annotations.paneProps}
                   onAsk={askAboutKorean}
                 />

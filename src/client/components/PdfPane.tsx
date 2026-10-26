@@ -43,11 +43,13 @@ export interface PageCanvasProps {
 export function PageCanvas({ doc, page, zoom, dpr, ariaLabel, size, onSize, registerPage, children }: PageCanvasProps): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [renderedSize, setRenderedSize] = useState<Size | null>(null);
+  const [failed, setFailed] = useState(false);
   const box = size ?? renderedSize;
 
   useEffect(() => {
     let cancelled = false;
     let task: { cancel(): void } | null = null;
+    setFailed(false);
 
     void (async () => {
       const proxy = await doc.getPage(page);
@@ -69,12 +71,10 @@ export function PageCanvas({ doc, page, zoom, dpr, ariaLabel, size, onSize, regi
 
       const render = proxy.render({ canvas, canvasContext: context, viewport: proxy.getViewport({ scale: zoom * dpr }) });
       task = render;
-      try {
-        await render.promise;
-      } catch {
-        /* superseded by a newer zoom or unmounted */
-      }
-    })();
+      await render.promise;
+    })().catch(() => {
+      if (!cancelled) setFailed(true);
+    });
 
     return () => {
       cancelled = true;
@@ -90,6 +90,7 @@ export function PageCanvas({ doc, page, zoom, dpr, ariaLabel, size, onSize, regi
       style={box === null ? undefined : { width: box.width, height: box.height }}
     >
       <canvas ref={canvasRef} aria-label={ariaLabel ?? `${page}쪽 원문`} />
+      {failed ? <p role="alert">{page}쪽 원문을 불러오지 못했습니다.</p> : null}
       {children}
     </div>
   );
@@ -111,10 +112,12 @@ interface TextLayerOverlayProps {
  */
 function TextLayerOverlay({ doc, page, zoom }: TextLayerOverlayProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     let layer: { cancel(): void } | null = null;
+    setFailed(false);
 
     void (async () => {
       const proxy = await doc.getPage(page);
@@ -129,12 +132,10 @@ function TextLayerOverlay({ doc, page, zoom }: TextLayerOverlayProps): JSX.Eleme
       const viewport = proxy.getViewport({ scale: zoom });
       const instance = new TextLayer({ textContentSource: proxy.streamTextContent(), container, viewport });
       layer = instance;
-      try {
-        await instance.render();
-      } catch {
-        /* superseded by a newer zoom or unmounted */
-      }
-    })();
+      await instance.render();
+    })().catch(() => {
+      if (!cancelled) setFailed(true);
+    });
 
     return () => {
       cancelled = true;
@@ -142,7 +143,10 @@ function TextLayerOverlay({ doc, page, zoom }: TextLayerOverlayProps): JSX.Eleme
     };
   }, [doc, page, zoom]);
 
-  return <div className="textLayer" ref={containerRef} data-testid={`text-layer-${page}`} />;
+  return <>
+    <div className="textLayer" ref={containerRef} data-testid={`text-layer-${page}`} />
+    {failed ? <p role="alert">{page}쪽 텍스트를 불러오지 못했습니다.</p> : null}
+  </>;
 }
 
 interface PageViewProps {
@@ -199,7 +203,7 @@ export interface PdfPaneProps {
   registerPage(page: number, element: HTMLDivElement | null): void;
   bodyRef: React.RefObject<HTMLDivElement | null>;
   onScroll(): void;
-  onSelectBlock(block: Block): void;
+  onSelectPage(page: number): void;
   onOpenHighlight(highlight: Highlight): void;
   annotationMode?: AnnotationMode;
   highlighterColor?: Highlight['color'];
@@ -408,7 +412,7 @@ export function PdfPages(props: PdfPaneProps): JSX.Element {
       const block = hitTestBlock(current.blocks, page, x, y);
       if (block !== null) navigateTimer.current = setTimeout(() => {
         navigateTimer.current = null;
-        latest.current.onSelectBlock(block);
+        latest.current.onSelectPage(page);
       }, 300);
     };
     const move = (moving: PointerEvent) => {

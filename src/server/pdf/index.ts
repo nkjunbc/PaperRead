@@ -6,7 +6,7 @@ import { SourceError } from '../arxiv/index';
 import { mathematicalFont, offsetSourceSpans, sourceSpansForPieces, type SourcePiece } from './inline';
 import { hyphenVocabulary, joinLineBreakHyphens, restoreSoftHyphen, softHyphenEnds } from './hyphen';
 
-export const EXTRACTION_VERSION = 'pdfjs6-lines-v10-compound-words';
+export const EXTRACTION_VERSION = 'pdfjs6-lines-v11-visual-crops';
 // Keep the identity recipe: unaffected text/order stays stable. Recovered captions
 // change later block order naturally; re-extraction remaps saved text by source hash.
 const BLOCK_ID_VERSION = 'pdfjs6-lines-v4';
@@ -670,6 +670,14 @@ export async function extractPdf(bytes:Uint8Array, paperKey:string, options:Extr
               tableGraphicIndexes.add(fi);
               merged=true;
             }
+          }
+        }
+        for(let merged=true;merged;) {
+          merged=false;
+          for(let i=0;i<tables.length && !merged;i++) for(let j=i+1;j<tables.length;j++) {
+            if(!boxesClose(tables[i],tables[j],0) || crossesCaption(tables[i],tables[j],captionRegions)) continue;
+            tables[i]=union([tables[i],tables[j]]);
+            tables.splice(j,1); merged=true; break;
           }
         }
         const figuresByBand:Region[][]=bands.map(()=>[]);
