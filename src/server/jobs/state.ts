@@ -301,17 +301,15 @@ export class JobManager {
   // ------------------------------------------------------------ generation
 
   /**
-   * Cancel a job and bump its generation so in-flight results are discarded.
-   * The job returns to `idle` and the active slot is freed.
+   * Cancel the paper's job and bump its generation so in-flight results are discarded.
+   * The job returns to `idle` with no page being sent, and the active slot is freed.
+   * The job is read from the paper's own record, not through the jobs index: a process
+   * stopped between the two writes leaves a job the index does not name.
    */
-  cancelJob(jobId: string): Job {
-    const job = this.requireJob(jobId);
-    return this.persist({
-      ...job,
-      generation: job.generation + 1,
-      state: 'idle',
-      pauseReason: null,
-    });
+  cancelJobForPaper(paperKey: string): Job | null {
+    const job = this.store.getJobForPaper(paperKey);
+    if (job === null) return null;
+    return this.persist({ ...job, generation: job.generation + 1, state: 'idle', pauseReason: null, currentPage: null });
   }
 
   /**
@@ -323,8 +321,7 @@ export class JobManager {
    */
   invalidateForReextraction(paperKey: string): { prior: ReextractionRecord; invalidated: Job | null } {
     const prior = this.store.beginReextraction(paperKey);
-    const job = this.store.getJobForPaper(paperKey);
-    const invalidated = job === null ? null : this.cancelJob(job.jobId);
+    const invalidated = this.cancelJobForPaper(paperKey);
     this.store.clearDerivedWork(paperKey);
     return { prior, invalidated };
   }
@@ -358,21 +355,12 @@ export class JobManager {
   }
 
   /**
-   * Called when a paper's data is deleted: bump the generation so any late
-   * result is discarded, and free the active slot.
-   */
-  onPaperDeleted(paperKey: string): Job | null {
-    const job = this.store.getJobForPaper(paperKey);
-    if (job === null) return null;
-    return this.persist({ ...job, generation: job.generation + 1, state: 'idle', pauseReason: null });
-  }
-
-  /**
-   * Delete a revision's app-owned data together with its job record.
+   * Delete a revision's app-owned data together with its job record. The job is
+   * cancelled first, so a late result is discarded even if the deletion fails.
    * Local only — no remote/arXiv data is touched.
    */
   deletePaperAndJobs(paperKey: string): void {
-    this.onPaperDeleted(paperKey);
+    this.cancelJobForPaper(paperKey);
     this.store.deletePaper(paperKey);
   }
 

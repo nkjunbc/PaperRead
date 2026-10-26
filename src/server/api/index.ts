@@ -570,6 +570,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
       }
       if (segments.length === 4 && segments[3] === 'retry' && method === 'POST') {
         const job = await locked(async () => {
+          jobs.assertNoPendingReextraction(existing.paperKey);
           const current = jobs.getJob(jobId);
           if (current === null) throw notFound('작업을 찾을 수 없습니다.');
           if (current.state === 'running') throw appError('BUSY', '이 작업의 번역이 이미 진행 중입니다.', true);
@@ -600,6 +601,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
           throw appError('MODEL_UNAVAILABLE', '이 작업은 사용하지 않도록 설정된 모델로 만들어져 재개할 수 없습니다.', false);
         }
         const job = await locked(async () => {
+          jobs.assertNoPendingReextraction(existing.paperKey);
           const current = jobs.getJob(jobId) ?? existing;
           // Finished translations remain readable even if their model is no longer
           // offered. Replaying them never checks an account or starts work.
@@ -938,6 +940,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
       throw appError('MODEL_UNAVAILABLE', '이 모델은 사용하지 않도록 설정되어 있습니다.', false);
     }
     return locked(async () => {
+      jobs.assertNoPendingReextraction(paperKey);
       requireReadablePaper(paperKey);
       const existing = store.getJobForPaper(paperKey);
       // A finished or running job is simply reported: nothing is sent, so no account is needed.
@@ -959,9 +962,6 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
 
   /**
    * Replace a paper's translation with a fresh run on the model the user confirmed.
-   * Everything that could refuse — input, paper, a pending re-extraction, account, model,
-   * another paper's job — is checked before the current job is stopped and before the store
-   * deletes anything.
    */
   async function restartTranslation(paperKey: string, body: Record<string, unknown>): Promise<Job> {
     const request: RestartTranslationRequest = {
@@ -973,6 +973,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
       throw appError('MODEL_UNAVAILABLE', '이 모델은 사용하지 않도록 설정되어 있습니다.', false);
     }
     return locked(async () => {
+      jobs.assertNoPendingReextraction(paperKey);
       requireReadablePaper(paperKey);
       const existing = store.getJobForPaper(paperKey);
       if (existing === null) throw notFound('이 논문에는 아직 번역 작업이 없습니다. 번역 시작을 사용해 주세요.');
@@ -992,7 +993,6 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
         drive(existing);
         return existing;
       }
-      jobs.assertNoPendingReextraction(paperKey);
       if (existing.jobId !== request.expectedJobId) {
         throw appError('BUSY', '이 논문의 번역 작업이 그사이 바뀌었습니다. 최신 상태를 확인한 뒤 다시 시도해 주세요.', false);
       }
