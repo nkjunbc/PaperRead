@@ -6,7 +6,7 @@ import { SourceError } from '../arxiv/index';
 import { mathematicalFont, offsetSourceSpans, sourceSpansForPieces, type SourcePiece } from './inline';
 import { hyphenVocabulary, joinLineBreakHyphens, restoreSoftHyphen, softHyphenEnds } from './hyphen';
 
-export const EXTRACTION_VERSION = 'pdfjs6-lines-v9-hyphen-appendix';
+export const EXTRACTION_VERSION = 'pdfjs6-lines-v10-compound-words';
 // Keep the identity recipe: unaffected text/order stays stable. Recovered captions
 // change later block order naturally; re-extraction remaps saved text by source hash.
 const BLOCK_ID_VERSION = 'pdfjs6-lines-v4';
@@ -908,8 +908,8 @@ export async function extractPdf(bytes:Uint8Array, paperKey:string, options:Extr
       prev.text=normalizeText(prev.text+' '+next.text); prev.regions.push(...next.regions); prev.kind=cropKind(prev.text);
       drafts.splice(i+1,1); i--;
     }
-    // Words broken at a line end are put back once every block is final, with the whole paper
-    // as the word list that tells a broken word from a compound (see hyphen.ts).
+    // Words broken at a line end are put back once every block is final, with the whole paper,
+    // then an English word list, telling a broken word from a compound (see hyphen.ts).
     const vocabulary=hyphenVocabulary(drafts.filter(d=>['paragraph','heading','caption','reference'].includes(d.kind)));
     for(const d of drafts) if(d.text) {
       const joined=joinLineBreakHyphens(d,vocabulary);
