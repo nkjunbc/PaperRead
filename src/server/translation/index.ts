@@ -183,7 +183,8 @@ export function mergeUsage(base: Usage, next: Usage): Usage {
  *    reused, whichever prompt version made it, skipping the request; anything still
  *    sent uses the current PROMPT_VERSION and is recorded with it
  *  - the job generation is re-checked before every request and again before
- *    every write, so a cancel/delete discards in-flight results
+ *    every write, so a cancel/delete discards in-flight results; a pending
+ *    re-extraction journal stops the run the same way
  *  - auth / quota / missing-model stop the job immediately with a mapped
  *    pauseReason; any other per-block failure is recorded and the run continues
  */
@@ -326,10 +327,12 @@ export class TranslationPipeline {
     } catch (cause) {
       // Disk or progress persistence failures must stop generation, not be retried as
       // malformed model responses. If the disk still permits it, expose a failed job.
+      // A guard that cannot read (an unreadable re-extraction journal) writes nothing
+      // here and never replaces the failure that stopped the run.
       controller.abort();
-      if (this.guard(jobId, generation) !== null) {
-        try { this.jobs.failJob(jobId, toAppError(cause)); } catch { /* retain the original save failure */ }
-      }
+      try {
+        if (this.guard(jobId, generation) !== null) this.jobs.failJob(jobId, toAppError(cause));
+      } catch { /* retain the original failure */ }
       throw cause;
     } finally {
       controller.abort();
@@ -354,8 +357,9 @@ export class TranslationPipeline {
     const active = new Set<number>();
     const deferred: number[] = [];
     const updatePage = () => {
+      if (controller.signal.aborted) return;
       const current = this.guard(jobId, generation);
-      if (current === null || controller.signal.aborted) return;
+      if (current === null) return;
       const page = active.size > 0 ? Math.min(...active) : null;
       if (current.currentPage !== page) this.jobs.updateCurrentPage(jobId, page);
     };
@@ -373,6 +377,10 @@ export class TranslationPipeline {
             const outcome = await this.runPage(jobId, generation, controller, context, blocks, tracker, options, final);
             if (outcome === 'deferred') deferred.push(page);
             if (outcome === 'aborted' || outcome === 'paused' || outcome === 'jobFailed') controller.abort();
+          } catch (cause) {
+            // Stop before the cleanup below, so its guard read cannot replace this failure.
+            controller.abort();
+            throw cause;
           } finally {
             active.delete(page);
             updatePage();
@@ -636,13 +644,18 @@ export class TranslationPipeline {
     }
   }
 
-  /** The job as it stands now, or null when this run must stop writing. */
+  /**
+   * The job as it stands now, or null when this run must stop writing and sending. A pending
+   * re-extraction journal stops every request branch even when the cancellation it began was
+   * never saved. A journal that cannot be read throws STORAGE rather than reading as none.
+   */
   private guard(jobId: string, generation: number): Job | null {
     const job = this.jobs.getJob(jobId);
     if (job === null) return null;
     if (job.generation !== generation) return null;
     if (job.state !== 'running') return null;
     if (this.store.getPaper(job.paperKey) === null) return null;
+    if (this.store.pendingReextraction(job.paperKey) !== null) return null;
     return job;
   }
 
