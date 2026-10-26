@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import type { AppError, Block, Highlight, Job, LogoutResult, Paper, PaperChat, PaperListResult, Region, RestartTranslationRequest, Snapshot, Translation, Translator } from '../../shared/contracts';
 import { MAX_ANNOTATION_RECTS } from '../../shared/contracts';
 import type { AccountSession } from '../codex/auth-contract';
-import { PaperStore, appError, invalidInput, notFound } from '../store/index';
+import { PaperStore, appError, invalidInput, notFound, type ReextractionRecord } from '../store/index';
 import { assertSafeKey, validateAnnotationDetails } from '../store/validate';
 import { JobManager } from '../jobs/state';
 import { PROMPT_VERSION, TranslationPipeline, type PipelineLogEvent } from '../translation/index';
@@ -570,6 +570,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
       }
       if (segments.length === 4 && segments[3] === 'retry' && method === 'POST') {
         const job = await locked(async () => {
+          jobs.assertNoPendingReextraction(existing.paperKey);
           const current = jobs.getJob(jobId);
           if (current === null) throw notFound('작업을 찾을 수 없습니다.');
           if (current.state === 'running') throw appError('BUSY', '이 작업의 번역이 이미 진행 중입니다.', true);
@@ -600,6 +601,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
           throw appError('MODEL_UNAVAILABLE', '이 작업은 사용하지 않도록 설정된 모델로 만들어져 재개할 수 없습니다.', false);
         }
         const job = await locked(async () => {
+          jobs.assertNoPendingReextraction(existing.paperKey);
           const current = jobs.getJob(jobId) ?? existing;
           // Finished translations remain readable even if their model is no longer
           // offered. Replaying them never checks an account or starts work.
@@ -635,12 +637,14 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   }
 
   /** A revision already on disk is reused verbatim only when its extraction format matches.
-   * Empty blocks indicate an invalid/torn prior extraction. */
+   * Empty blocks indicate an invalid/torn prior extraction, and a pending re-extraction record
+   * one that stopped before it carried everything over. */
   function isCurrentExtraction(stored: Paper): boolean {
     return (
       (stored.status === 'ready' || stored.status === 'partial') &&
       stored.extractionVersion === EXTRACTION_VERSION &&
-      store.listBlocks(stored.paperKey).length > 0
+      store.listBlocks(stored.paperKey).length > 0 &&
+      store.pendingReextraction(stored.paperKey) === null
     );
   }
 
@@ -686,27 +690,22 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     if (stored !== null && isCurrentExtraction(stored)) return stored;
 
     const storedPdf = stored === null ? null : store.getPdf(stored.paperKey);
-    let carried: Translation[] = [];
-    let previousModel: string | null = null;
+    let prior: ReextractionRecord | null = null;
     if (storedPdf !== null) {
-      // Finished translations survive the re-extraction wherever the paragraph text did not
-      // change (same source hash); they are re-attached to the new block ids afterwards.
-      carried = store.listTranslations(stored!.paperKey).filter((t) => t.status === 'completed');
-      // Block identity is changing. The old job must not be replayed for the
-      // replacement blocks, and its in-flight result must become stale. Its model stays the
-      // revision's model.
-      const invalidated = jobs.invalidateForReextraction(stored!.paperKey);
-      if (invalidated !== null) {
-        pipeline.abort(invalidated.jobId);
-        previousModel = invalidated.modelId;
-      }
+      // Block identity is changing. The old job must not be replayed for the replacement blocks,
+      // and its in-flight result must become stale. The finished translations, the Korean notes,
+      // the blocks they were made on and the job's model are kept on disk until they are
+      // carried over.
+      const reextraction = jobs.invalidateForReextraction(stored!.paperKey);
+      if (reextraction.invalidated !== null) pipeline.abort(reextraction.invalidated.jobId);
+      prior = reextraction.prior;
     }
     const pending = store.savePaper({ ...(storedPdf === null ? resolved : stored!), ...(stored?.displayTitle === undefined ? {} : { displayTitle: stored.displayTitle }), status: 'fetching' });
     if (!acquiring.has(pending.paperKey)) {
       const acquisition = ++nextAcquisition;
       acquiring.set(pending.paperKey, acquisition);
       if (storedPdf === null) void acquireInBackground(pending.paperKey, input, acquisition);
-      else void reextractInBackground(pending.paperKey, storedPdf, acquisition, carried, previousModel);
+      else void reextractInBackground(pending.paperKey, storedPdf, acquisition, prior!);
     }
     return pending;
   }
@@ -749,11 +748,11 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     }
   }
 
-  async function reextractInBackground(paperKey: string, pdf: Buffer, acquisition: number, carried: Translation[], previousModel: string | null): Promise<void> {
+  /** A failure leaves the prior generation's record in place, so the next open carries from it. */
+  async function reextractInBackground(paperKey: string, pdf: Buffer, acquisition: number, prior: ReextractionRecord): Promise<void> {
     try {
       const current = store.getPaper(paperKey);
       if (current === null || !isCurrentAcquisition(paperKey, acquisition)) return;
-      const previousBlocks = store.listBlocks(paperKey);
       store.savePaper({ ...current, status: 'extracting' });
       const { paper, blocks } = await acquirer.reextract(current, pdf);
       if (!isCurrentAcquisition(paperKey, acquisition)) return;
@@ -763,12 +762,12 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
       // The same source hash is the same sentence: the translation the reader saw on the old
       // paragraph (chosen as the Korean page chooses, on the job's model) is kept under the new
       // block id, so a format change never re-sends what was already translated.
-      const shown = selectTranslations(previousBlocks, carried, previousModel);
+      const shown = selectTranslations(prior.blocks, prior.translations, prior.modelId);
       // A paragraph changed only by putting back words broken at a line end is the same sentence
       // too: it is matched as it now reads.
-      const matched = rejoinedForCarry(previousBlocks, blocks, shown);
+      const matched = rejoinedForCarry(prior.blocks, blocks, shown);
       const byHash = new Map<string, { block: Block; translation: Translation }>();
-      for (const [index, block] of previousBlocks.entries()) {
+      for (const [index, block] of prior.blocks.entries()) {
         const translation = shown.get(block.blockId);
         if (translation !== undefined && isTranslated(block, translation)) byHash.set(matched[index].sourceHash, { block: matched[index], translation });
       }
@@ -782,19 +781,21 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
         if (!isCurrentAcquisition(paperKey, acquisition)) return;
         kept.push(store.saveTranslation(paperKey, { ...previous.translation, blockId: block.blockId, sourceHash: block.sourceHash, text }));
       }
-      for (const annotation of remapTranslationAnchors(store.listHighlights(paperKey), matched, blocks, [...shown.values()], kept)) {
+      // Moved from the record, so a retry writes the same anchors again; a note deleted since stays deleted.
+      for (const moved of remapTranslationAnchors(prior.highlights, matched, blocks, [...shown.values()], kept)) {
         if (!isCurrentAcquisition(paperKey, acquisition)) return;
-        store.saveHighlight(paperKey, annotation);
+        const live = store.getHighlight(paperKey, moved.highlightId);
+        if (live !== null) store.saveHighlight(paperKey, { ...live, anchors: moved.anchors });
       }
       // The revision keeps the model of the job it had, even when no paragraph survived: a new
       // job on that model waits, paused, for the user to translate the paragraphs that are still
       // missing, which then go out with the current prompt. Without a previous job, the model
       // that made everything kept pins it the same way; otherwise the saved default applies.
       const models = new Set(kept.map((t) => t.modelId));
-      const model = previousModel ?? (models.size === 1 ? kept[0]!.modelId : null);
-      if (model !== null && isCurrentAcquisition(paperKey, acquisition)) {
-        jobs.adoptCarriedTranslations(paperKey, model, PROMPT_VERSION);
-      }
+      const model = prior.modelId ?? (models.size === 1 ? kept[0]!.modelId : null);
+      if (!isCurrentAcquisition(paperKey, acquisition)) return;
+      if (model !== null) jobs.adoptCarriedTranslations(paperKey, model, PROMPT_VERSION);
+      store.finishReextraction(paperKey);
     } catch (cause) {
       const { error } = toHttp(cause);
       const current = store.getPaper(paperKey);
@@ -852,6 +853,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
     const note = readOptionalNote(body) ?? null;
     const details = validateAnnotationDetails(body);
     if (details.kind === 'ink' && note !== null) throw invalidInput(NO_MEMO_ON_INK);
+    if (details.surface === 'translation') jobs.assertNoPendingReextraction(paper.paperKey);
     return {
       highlightId: randomUUID(),
       paperKey: paper.paperKey,
@@ -938,6 +940,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
       throw appError('MODEL_UNAVAILABLE', '이 모델은 사용하지 않도록 설정되어 있습니다.', false);
     }
     return locked(async () => {
+      jobs.assertNoPendingReextraction(paperKey);
       requireReadablePaper(paperKey);
       const existing = store.getJobForPaper(paperKey);
       // A finished or running job is simply reported: nothing is sent, so no account is needed.
@@ -959,8 +962,6 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
 
   /**
    * Replace a paper's translation with a fresh run on the model the user confirmed.
-   * Everything that could refuse — input, paper, account, model, another paper's job — is
-   * checked before the current job is stopped and before the store deletes anything.
    */
   async function restartTranslation(paperKey: string, body: Record<string, unknown>): Promise<Job> {
     const request: RestartTranslationRequest = {
@@ -972,6 +973,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
       throw appError('MODEL_UNAVAILABLE', '이 모델은 사용하지 않도록 설정되어 있습니다.', false);
     }
     return locked(async () => {
+      jobs.assertNoPendingReextraction(paperKey);
       requireReadablePaper(paperKey);
       const existing = store.getJobForPaper(paperKey);
       if (existing === null) throw notFound('이 논문에는 아직 번역 작업이 없습니다. 번역 시작을 사용해 주세요.');

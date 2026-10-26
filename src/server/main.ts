@@ -14,7 +14,7 @@ import { acquirePaper, resolveArxiv } from './arxiv/acquire';
 import { normalizeArxiv } from './arxiv/index';
 import { extractPublication, identifyPublication, loadPublication } from './publication/index';
 import type { PublicNetworkOptions } from './publication/network';
-import { extractPdf, inferTitle } from './pdf/index';
+import { extractPdf, inferTitle, sha256 } from './pdf/index';
 import { identifyLocalPdf } from './pdf/upload';
 import { notFound } from './store/errors';
 
@@ -74,6 +74,8 @@ export function realAcquirer(directory: string, publicationOptions: PublicNetwor
         paper: {
           ...paper,
           title: paper.title ?? inferTitle(blocks),
+          // A failed attempt cleared the hash with the rest of the extraction metadata.
+          pdfSha256: sha256(pdf),
           pageCount: coverage.totalPages,
           coverage,
           extractionVersion,

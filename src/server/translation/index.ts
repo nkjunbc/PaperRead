@@ -183,7 +183,8 @@ export function mergeUsage(base: Usage, next: Usage): Usage {
  *    reused, whichever prompt version made it, skipping the request; anything still
  *    sent uses the current PROMPT_VERSION and is recorded with it
  *  - the job generation is re-checked before every request and again before
- *    every write, so a cancel/delete discards in-flight results
+ *    every write, so a cancel/delete discards in-flight results; a pending
+ *    re-extraction journal stops the run the same way
  *  - auth / quota / missing-model stop the job immediately with a mapped
  *    pauseReason; any other per-block failure is recorded and the run continues
  */
@@ -310,8 +311,7 @@ export class TranslationPipeline {
         await this.runPages(jobId, generation, controller, context, pages, deferred, tracker, options, true);
       }
 
-      const final = this.guard(jobId, generation);
-      if (final === null || controller.signal.aborted) return this.jobs.getJob(jobId) ?? job;
+      if (controller.signal.aborted || this.guard(jobId, generation) === null) return this.jobs.getJob(jobId) ?? job;
       // completed vs completed_with_gaps is decided purely by translatable-block coverage;
       // an untranslatable block was already recorded above and never enters this count.
       const finished = this.jobs.finalizeJob(jobId);
@@ -326,10 +326,12 @@ export class TranslationPipeline {
     } catch (cause) {
       // Disk or progress persistence failures must stop generation, not be retried as
       // malformed model responses. If the disk still permits it, expose a failed job.
+      // A guard that cannot read (an unreadable re-extraction journal) writes nothing
+      // here and never replaces the failure that stopped the run.
       controller.abort();
-      if (this.guard(jobId, generation) !== null) {
-        try { this.jobs.failJob(jobId, toAppError(cause)); } catch { /* retain the original save failure */ }
-      }
+      try {
+        if (this.guard(jobId, generation) !== null) this.jobs.failJob(jobId, toAppError(cause));
+      } catch { /* retain the original failure */ }
       throw cause;
     } finally {
       controller.abort();
@@ -338,7 +340,8 @@ export class TranslationPipeline {
   }
 
   /** Two workers share a stop signal, but never a page or a provider thread. Await
-   * both workers even after failure so a subsequent resume cannot race this run. */
+   * both workers even after failure so a subsequent resume cannot race this run. The
+   * first failure a worker observes is the one reported, whichever worker it was. */
   private async runPages(
     jobId: string,
     generation: number,
@@ -353,9 +356,11 @@ export class TranslationPipeline {
     let next = 0;
     const active = new Set<number>();
     const deferred: number[] = [];
+    const failures: unknown[] = [];
     const updatePage = () => {
+      if (controller.signal.aborted) return;
       const current = this.guard(jobId, generation);
-      if (current === null || controller.signal.aborted) return;
+      if (current === null) return;
       const page = active.size > 0 ? Math.min(...active) : null;
       if (current.currentPage !== page) this.jobs.updateCurrentPage(jobId, page);
     };
@@ -373,19 +378,22 @@ export class TranslationPipeline {
             const outcome = await this.runPage(jobId, generation, controller, context, blocks, tracker, options, final);
             if (outcome === 'deferred') deferred.push(page);
             if (outcome === 'aborted' || outcome === 'paused' || outcome === 'jobFailed') controller.abort();
+          } catch (cause) {
+            // Stop before the cleanup below, so its guard read cannot replace this failure.
+            controller.abort();
+            throw cause;
           } finally {
             active.delete(page);
             updatePage();
           }
         }
       } catch (cause) {
+        failures.push(cause);
         controller.abort();
-        throw cause;
       }
     };
-    const outcomes = await Promise.allSettled(Array.from({ length: Math.min(this.pageConcurrency, pageNumbers.length) }, worker));
-    const failure = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected');
-    if (failure) throw failure.reason;
+    await Promise.allSettled(Array.from({ length: Math.min(this.pageConcurrency, pageNumbers.length) }, worker));
+    if (failures.length > 0) throw failures[0];
     return deferred.sort((a, b) => a - b);
   }
 
@@ -424,6 +432,7 @@ export class TranslationPipeline {
         if (result.lastError) lastError = result.lastError;
         invalidFormat ||= result.lastError?.code === 'INVALID_TRANSLATION';
       }
+      if (controller.signal.aborted) return 'aborted';
       const after = this.guard(jobId, generation);
       if (after === null) return 'aborted';
       remaining = this.pending(after, remaining);
@@ -460,8 +469,9 @@ export class TranslationPipeline {
     tracker: RunTracker,
     options: RunOptions,
   ): Promise<{ kind: 'aborted' | 'paused' | 'jobFailed' | 'attempted'; lastError?: AppError }> {
+    if (controller.signal.aborted) return { kind: 'aborted' };
     const current = this.guard(jobId, generation);
-    if (current === null || controller.signal.aborted) return { kind: 'aborted' };
+    if (current === null) return { kind: 'aborted' };
 
     const numbers = new Set<number>();
     for (const block of blocks) {
@@ -497,9 +507,9 @@ export class TranslationPipeline {
         let saving = false;
         try {
           const output = await this.translateOversizedParagraph(jobId, generation, paragraph.block, context, controller.signal);
-          if (output === null) return { kind: 'aborted' };
+          if (output === null || controller.signal.aborted) return { kind: 'aborted' };
           const after = this.guard(jobId, generation);
-          if (after === null || controller.signal.aborted) return { kind: 'aborted' };
+          if (after === null) return { kind: 'aborted' };
           const text = validateTranslationText(output.text);
           validateFormattedTranslation(paragraph.block, text, PROMPT_VERSION);
           saving = true;
@@ -535,8 +545,9 @@ export class TranslationPipeline {
     }
 
     // Re-check *after* the round trip: a late answer to a cancelled job is discarded.
+    if (controller.signal.aborted) return { kind: 'aborted' };
     const after = this.guard(jobId, generation);
-    if (after === null || controller.signal.aborted) return { kind: 'aborted' };
+    if (after === null) return { kind: 'aborted' };
 
     let itemError: AppError | undefined;
     for (const paragraph of paragraphs) {
@@ -615,8 +626,9 @@ export class TranslationPipeline {
     context: string,
     signal: AbortSignal,
   ): Promise<{ text: string; usage: Usage } | null> {
+    if (signal.aborted) return null;
     const job = this.guard(jobId, generation);
-    if (job === null || signal.aborted) return null;
+    if (job === null) return null;
     try {
       const output = await this.raceAbort(this.translator.translate({ block, modelId: job.modelId, context, signal, promptVersion: PROMPT_VERSION }), signal);
       const text = validateTranslationText(output.text);
@@ -636,13 +648,23 @@ export class TranslationPipeline {
     }
   }
 
-  /** The job as it stands now, or null when this run must stop writing. */
+  /**
+   * The job as it stands now, or null when this run must stop writing and sending. A pending
+   * re-extraction journal stops every request branch even when the cancellation it began was
+   * never saved. A journal that cannot be read throws STORAGE rather than reading as none.
+   * After any await, read it only once the run's signal is known not to be aborted: a sibling
+   * that stopped the run on a failure may have left the journal unreadable, and this read's
+   * STORAGE would then replace that failure. It does not abort the run itself. Every send and
+   * write reads it again first, so an unreadable journal stops them all. A catch that takes an
+   * abort as a quiet stop would swallow the STORAGE.
+   */
   private guard(jobId: string, generation: number): Job | null {
     const job = this.jobs.getJob(jobId);
     if (job === null) return null;
     if (job.generation !== generation) return null;
     if (job.state !== 'running') return null;
     if (this.store.getPaper(job.paperKey) === null) return null;
+    if (this.store.pendingReextraction(job.paperKey) !== null) return null;
     return job;
   }
 
