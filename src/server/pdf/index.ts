@@ -6,7 +6,7 @@ import { SourceError } from '../arxiv/index';
 import { mathematicalFont, offsetSourceSpans, sourceSpansForPieces, type SourcePiece } from './inline';
 import { hyphenVocabulary, joinLineBreakHyphens, restoreSoftHyphen, softHyphenEnds } from './hyphen';
 
-export const EXTRACTION_VERSION = 'pdfjs6-lines-v11-visual-crops';
+export const EXTRACTION_VERSION = 'pdfjs6-lines-v12-full-width-tail';
 // Keep the identity recipe: unaffected text/order stays stable. Recovered captions
 // change later block order naturally; re-extraction remaps saved text by source hash.
 const BLOCK_ID_VERSION = 'pdfjs6-lines-v4';
@@ -361,7 +361,7 @@ function assignBandIndex(fig:Region, ranges:[number,number][], yRanges:[number,n
  * left-column equation that merely pokes past the middle still belongs to its column. */
 const sideOf=(l:Line):'left'|'right'|'full' =>
   l.region.x<.42 && l.region.x+l.region.width>.58 ? 'full' : (l.region.x+l.region.width/2<.5 ? 'left' : 'right');
-function layout(lines:Line[]):Line[][] {
+function layout(lines:Line[], gutter:Gutter|null):Line[][] {
   // Require several aligned lines of running prose on both sides; a single indentation isn't
   // a column, and neither are table cells or equation pieces that share a baseline — treating
   // those as columns split every full-width paragraph's short last line into its own block.
@@ -378,11 +378,17 @@ function layout(lines:Line[]):Line[][] {
   const flushPending=()=>{ if(pending.length) { bands.push(pending.filter(l=>sideOf(l)==='left'),pending.filter(l=>sideOf(l)==='right')); pending=[]; } };
   // Visual rows top to bottom, each row left to right, so the left half of a split line is
   // always met before its right half.
-  const byBaseline=[...lines].sort((a,b)=>a.baseline-b.baseline), ordered:Line[]=[];
+  const byBaseline=[...lines].sort((a,b)=>a.baseline-b.baseline), ordered:Line[]=[], pairedColumns=new Set<Line>();
   for(let i=0;i<byBaseline.length;) {
     let j=i+1;
     while(j<byBaseline.length && byBaseline[j].baseline-byBaseline[i].baseline<Math.min(byBaseline[i].region.height,byBaseline[j].region.height)*.4) j++;
-    ordered.push(...byBaseline.slice(i,j).sort((a,b)=>a.region.x-b.region.x));
+    const row=byBaseline.slice(i,j).sort((a,b)=>a.region.x-b.region.x);
+    // A caption's split row reaches into the gutter. Two body columns stop at its edges.
+    if(gutter!==null && row.some(l=>wordCount(l.text)>=3 && l.region.width>=.2 && sideOf(l)==='left' && l.region.x+l.region.width<=gutter.left+.004)
+      && row.some(l=>wordCount(l.text)>=3 && l.region.width>=.2 && sideOf(l)==='right' && l.region.x>=gutter.right-.004)) {
+      for(const part of row) pairedColumns.add(part);
+    }
+    ordered.push(...row);
     i=j;
   }
   for(const line of ordered) {
@@ -391,9 +397,12 @@ function layout(lines:Line[]):Line[][] {
     // line that runs on, at its left edge, or level with such a piece. Split off, they became
     // one-line "paragraphs" in each column.
     const above=full.at(-1);
-    const tail=above!==undefined && pending.length===0 && !/[.!?]$/.test(above.text) && line.region.y>above.region.y
-      && Math.abs(line.region.x-above.region.x)<.012 && line.region.y-(above.region.y+above.region.height)<above.region.height*1.2;
-    const level=pending.length===0 && adopted.some(a=>Math.abs(a.baseline-line.baseline)<Math.min(a.region.height,line.region.height)*.4);
+    // The last piece supplies the sentence ending; the whole visual row supplies its left edge.
+    const aboveLeft=above===undefined ? NaN : Math.min(...full.filter(part=>
+      Math.abs(part.baseline-above.baseline)<Math.min(part.region.height,above.region.height)*.4).map(part=>part.region.x));
+    const tail=above!==undefined && pending.length===0 && !pairedColumns.has(line) && !/[.!?]$/.test(above.text) && line.region.y>above.region.y
+      && Math.abs(line.region.x-aboveLeft)<.012 && line.region.y-(above.region.y+above.region.height)<above.region.height*1.2;
+    const level=pending.length===0 && !pairedColumns.has(line) && adopted.some(a=>Math.abs(a.baseline-line.baseline)<Math.min(a.region.height,line.region.height)*.4);
     if(sideOf(line)==='full') { flushPending(); full.push(line); adopted=[]; }
     else if(tail || level) { full.push(line); adopted.push(line); }
     else { flushFull(); adopted=[]; pending.push(line); }
@@ -591,7 +600,7 @@ export async function extractPdf(bytes:Uint8Array, paperKey:string, options:Extr
         const refsAt=new Map<Line,boolean>();
         {
           let flag:boolean=references;
-          for(const band of layout(lines)) for(const line of [...band].sort((a,b)=>a.region.y-b.region.y)) {
+          for(const band of layout(lines,gutter)) for(const line of [...band].sort((a,b)=>a.region.y-b.region.y)) {
             refsAt.set(line,flag);
             if(classify(line,median,flag)==='heading') flag=false;
             if(isReferencesHeading(line.text)) flag=true;
@@ -654,7 +663,7 @@ export async function extractPdf(bytes:Uint8Array, paperKey:string, options:Extr
           // the drawing; otherwise that label would vanish from the Korean page altogether.
           figureClusters.push(union([cluster,...[...mine].map(l=>l.region)]));
         }
-        const bands=layout(free.filter(l=>!absorbed.has(l)));
+        const bands=layout(free.filter(l=>!absorbed.has(l)),gutter);
         const bandRanges=bands.map(bandXRange);
         const bandYRanges=bands.map(bandYRange);
         // A table's border is emitted as a graphic by PDF.js. Absorb every nearby graphic
@@ -692,6 +701,7 @@ export async function extractPdf(bytes:Uint8Array, paperKey:string, options:Extr
         }
         for(let bi=0;bi<bands.length;bi++) {
           const band=bands[bi];
+          const fullWidthCaption=bands.length>1 && band.some(l=>sideOf(l)==='full' && kindOf(l)==='caption');
           const proseWidth=Math.max(0,...band.filter(l=>kindOf(l)==='paragraph').map(l=>l.region.width));
           type Entry = {y:number; line?:Line; figure?:Region; table?:Region; cluster?:Line[]};
           const entries:Entry[]=[
@@ -717,7 +727,12 @@ export async function extractPdf(bytes:Uint8Array, paperKey:string, options:Extr
               const overlap=Math.min(t.region.y+t.region.height,line.region.y+line.region.height)-Math.max(t.region.y,line.region.y);
               if(overlap<Math.min(t.region.height,line.region.height)*.5) return false;
               const gap=line.region.x>=t.region.x ? line.region.x-(t.region.x+t.region.width) : t.region.x-(line.region.x+line.region.width);
-              return gap<Math.max(t.em,line.em)*2.5;
+              const [left,right]=t.region.x<=line.region.x ? [t,line] : [line,t];
+              // Layout already admitted this caption row across the measured gutter. Keep its
+              // prose pieces together downstream; equations still use the normal gap limit.
+              const splitCaption=fullWidthCaption && gutter!==null && kindOf(left)==='paragraph' && kindOf(right)==='paragraph'
+                && left.region.x<gutter.left && left.region.x+left.region.width>gutter.left+.004 && Math.abs(right.region.x-gutter.right)<.012;
+              return splitCaption || gap<Math.max(t.em,line.em)*2.5;
             }));
             if(group) group.push(line); else visual.push([line]);
           }
@@ -728,10 +743,11 @@ export async function extractPdf(bytes:Uint8Array, paperKey:string, options:Extr
             return {...pieces[0],text:normalizeText(pieces.map(l=>l.text).join(' ')),region:union(pieces.map(l=>l.region)),chars,boldChars:pieces.reduce((n,l)=>n+l.boldChars,0),em:chars>0?pieces.reduce((n,l)=>n+l.em*l.chars,0)/chars:pieces[0].em,uncertain:pieces.some(l=>l.uncertain),pieces:pieces.flatMap(l=>l.pieces),sizeChars:pieces.reduce((m,l)=>mergeSizes(m,l.sizeChars),{} as Record<string,number>)};
           };
           // The pieces of one visual line are read left to right, whichever of them sits higher.
-          const rowOf=new Map<Line,number>();
+          const rowOf=new Map<Line,{y:number}>();
           for(const group of visual) {
             const whole=asOne(group);
-            for(const piece of group) rowOf.set(piece,whole.region.y);
+            const row={y:whole.region.y};
+            for(const piece of group) rowOf.set(piece,row);
             let kind=classify(whole,median,refsAt.get(group[0])??references);
             if(kind==='paragraph' && isDisplayMath(whole,proseWidth,bandCenter)) kind='fragment';
             // A line that fills the measure with words is running text even when inline math makes
@@ -776,7 +792,7 @@ export async function extractPdf(bytes:Uint8Array, paperKey:string, options:Extr
             pitches.sort((a,b)=>a-b);
           }
           const commonPitch=pitches.length>=4 ? pitches[Math.floor(pitches.length*.4)] : NaN;
-          for(const line of prose) entries.push({y:rowOf.get(line)??line.region.y,line});
+          for(const line of prose) entries.push({y:rowOf.get(line)?.y??line.region.y,line});
           for(const cluster of clusters) entries.push({y:clusterBox(cluster).y,cluster});
           entries.sort((a,b)=>a.y-b.y || (a.line?.region.x??0)-(b.line?.region.x??0));
           let current:Draft|undefined, last:Line|undefined;
@@ -799,7 +815,8 @@ export async function extractPdf(bytes:Uint8Array, paperKey:string, options:Extr
             // The block's own left edge, not the previous line's start: a run-in heading
             // ("Evaluation.") followed by a wide space splits one visual line in two pieces.
             const blockLeft=current ? Math.min(...current.regions.map(r=>r.x)) : NaN;
-            const sameVisualLine=last!==undefined && Math.min(line.region.y+line.region.height,last.region.y+last.region.height)-Math.max(line.region.y,last.region.y)>Math.min(line.region.height,last.region.height)*.5 && line.region.x-(last.region.x+last.region.width)<line.em*2;
+            const sameVisualLine=last!==undefined && ((fullWidthCaption && rowOf.get(line)===rowOf.get(last))
+              || (Math.min(line.region.y+line.region.height,last.region.y+last.region.height)-Math.max(line.region.y,last.region.y)>Math.min(line.region.height,last.region.height)*.5 && line.region.x-(last.region.x+last.region.width)<line.em*2));
             // A centred paragraph (a licence notice, a dedication) has no shared left edge; its
             // lines share the band's centre instead.
             const centred=(r:Region)=>Math.abs(r.x+r.width/2-bandCenter)<.03;

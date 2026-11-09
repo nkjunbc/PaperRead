@@ -112,8 +112,15 @@ function repairAt(text:string, at:number, spans:readonly SourceSpan[], words:Wor
   // A dash set off from its words is punctuation, not a broken word.
   if (!/[\p{L}\p{N}]/u.test(before) || !/[\p{L}\p{N}]/u.test(after)) return soft ? 'unmark' : 'keep';
   if (soft) return /\p{L}/u.test(before) && /\p{Ll}/u.test(after) ? 'join' : 'unmark';
-  const head = (/\S*$/.exec(text.slice(0, at - 1))?.[0] ?? '').replace(/^[^\p{L}\p{N}]+/u, '');
-  const tail = (/^\S*/.exec(text.slice(at + 1))?.[0] ?? '').replace(/[^\p{L}\p{N}]+$/u, '');
+  let head = (/\S*$/.exec(text.slice(0, at - 1))?.[0] ?? '').replace(/^[^\p{L}\p{N}]+/u, '');
+  let tail = (/^\S*/.exec(text.slice(at + 1))?.[0] ?? '').replace(/[^\p{L}\p{N}]+$/u, '');
+  // A slash between two complete dictionary words is prose (ques-|tions/answers),
+  // while URLs, identifiers and hyphenated compounds keep the non-word guard below.
+  const alternatives = (head + tail).split('/');
+  if (alternatives.length === 2 && alternatives.every(word => /^\p{L}+$/u.test(word) && isEnglishWord(word.toLowerCase()))) {
+    head = head.slice(head.lastIndexOf('/') + 1);
+    tail = tail.split('/')[0];
+  }
   if (!/^\p{Ll}/u.test(tail) || !/\p{L}$/u.test(head)) return 'compound';
   const wordlike = /^\p{L}+(?:['’]\p{L}+)?$/u;
   if (!wordlike.test(head) || !wordlike.test(tail)) return 'compound';
